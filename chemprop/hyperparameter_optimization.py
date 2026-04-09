@@ -4,8 +4,11 @@ from copy import deepcopy
 from typing import Dict, Union
 import os
 from functools import partial
+import warnings
 
-from hyperopt import fmin, tpe, Trials
+with warnings.catch_warnings():
+    warnings.filterwarnings('ignore', message='pkg_resources is deprecated')
+    from hyperopt import fmin, tpe, Trials
 import numpy as np
 
 from chemprop.args import HyperoptArgs

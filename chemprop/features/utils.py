@@ -5,7 +5,6 @@ from typing import List
 
 import numpy as np
 import pandas as pd
-from rdkit.Chem import PandasTools
 
 
 def save_features(path: str, features: List[np.ndarray]) -> None:
@@ -87,6 +86,7 @@ def load_valid_atom_or_bond_features(path: str, smiles: List[str]) -> List[np.nd
             raise ValueError(f'Atom/bond descriptors input {path} format not supported')
 
     elif extension == '.sdf':
+        from rdkit.Chem import PandasTools
         features_df = PandasTools.LoadSDF(path).drop(['ID', 'ROMol'], axis=1).set_index('SMILES')
 
         features_df = features_df[~features_df.index.duplicated()]

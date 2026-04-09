@@ -57,7 +57,7 @@ setup(
         "descriptastorus>=2.6.1 ; python_version=='3.8'",
     ],
     extras_require={"test": ["pytest>=6.2.2", "parameterized>=0.8.1"]},
-    python_requires=">=3.7,<3.9",
+    python_requires=">=3.7,<3.12",
     classifiers=[
         "Programming Language :: Python :: 3.7",
         "Programming Language :: Python :: 3.8",

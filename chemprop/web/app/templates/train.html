@@ -51,7 +51,7 @@
             <select name="gpu">
                 <option value="None">None</option>
                 {% for gpu in gpus %}
-                    <option value="{{gpu}}">{{gpu}}</option>
+                    <option value="{{gpu}}" {% if loop.first %}selected{% endif %}>{{gpu}}</option>
                 {% endfor %}
             </select>
             <br>
@@ -90,6 +90,7 @@
                 if (data.training == 1) {
                     document.getElementById("myProgress").style.display = "";
                     document.getElementById("myBar").style.width = data.progress + "%";
+                    document.getElementById("myBar").style.backgroundColor = "hsl(" + (data.progress * 1.2) + ", 80%, 45%)";
                     document.getElementById("train").style.display = "none";
                     document.getElementById("training").style.display = "";
                     document.getElementById("train").disabled = "disabled";
@@ -106,9 +107,9 @@
         }
         
         #myBar {
-        width: "{{ progress }} %";
+        width: {{ progress }}%;
         height: 30px;
-        background-color: #4CAF50;
+        background-color: hsl(0, 80%, 45%);
         }
     </style>
 

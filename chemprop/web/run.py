@@ -4,6 +4,9 @@ This allows for training and predicting in a web browser.
 """
 
 import os
+import torch.serialization
+import argparse
+torch.serialization.add_safe_globals([argparse.Namespace])
 
 from tap import Tap  # pip install typed-argument-parser (https://github.com/swansonk14/typed-argument-parser)
 

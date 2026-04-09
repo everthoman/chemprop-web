@@ -132,7 +132,7 @@ def get_ckpts(user_id: int) -> List[sqlite3.Row]:
     if not user_id:
         user_id = app.config['DEFAULT_USER_ID']
 
-    return query_db(f'SELECT * FROM ckpt WHERE associated_user = {user_id}')
+    return query_db('SELECT * FROM ckpt WHERE associated_user = ?', (user_id,))
 
 
 def insert_ckpt(ckpt_name: str,
@@ -185,15 +185,15 @@ def delete_ckpt(ckpt_id: int):
 
     :param ckpt_id: The id of the checkpoint to be deleted.
     """
-    rows = query_db(f'SELECT * FROM model WHERE associated_ckpt = {ckpt_id}')
+    rows = query_db('SELECT * FROM model WHERE associated_ckpt = ?', (ckpt_id,))
 
     for row in rows:
         os.remove(os.path.join(app.config['CHECKPOINT_FOLDER'], f'{row["id"]}.pt'))
 
     db = get_db()
     cur = db.cursor()
-    db.execute(f'DELETE FROM ckpt WHERE id = {ckpt_id}')
-    db.execute(f'DELETE FROM model WHERE associated_ckpt = {ckpt_id}')
+    db.execute('DELETE FROM ckpt WHERE id = ?', (ckpt_id,))
+    db.execute('DELETE FROM model WHERE associated_ckpt = ?', (ckpt_id,))
     db.commit()
     cur.close()
 
@@ -205,7 +205,7 @@ def get_models(ckpt_id: int) -> List[sqlite3.Row]:
     :param ckpt_id: The id of the ckpt whose component models are returned.
     :return A list of models.
     """
-    return query_db(f'SELECT * FROM model WHERE associated_ckpt = {ckpt_id}')
+    return query_db('SELECT * FROM model WHERE associated_ckpt = ?', (ckpt_id,))
 
 
 def insert_model(ckpt_id: int) -> str:
@@ -236,7 +236,7 @@ def get_datasets(user_id: int) -> List[sqlite3.Row]:
     if not user_id:
         user_id = app.config['DEFAULT_USER_ID']
 
-    return query_db(f'SELECT * FROM dataset WHERE associated_user = {user_id}')
+    return query_db('SELECT * FROM dataset WHERE associated_user = ?', (user_id,))
 
 
 def insert_dataset(dataset_name: str,
@@ -282,6 +282,6 @@ def delete_dataset(dataset_id: int):
     :param dataset_id: The id of the dataset to be deleted.
     """
     db = get_db()
-    cur = db.execute(f'DELETE FROM dataset WHERE id = {dataset_id}')
+    cur = db.execute('DELETE FROM dataset WHERE id = ?', (dataset_id,))
     db.commit()
     cur.close()

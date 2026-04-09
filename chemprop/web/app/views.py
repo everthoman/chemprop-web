@@ -64,7 +64,7 @@ def progress_bar(args: TrainArgs, progress: mp.Value):
                     progress.value = (current_epoch + 1) * 100 / args.epochs
         else:
             pass
-        time.sleep(0)
+        time.sleep(0.5)
 
 
 def find_unused_path(path: str) -> str:
@@ -525,7 +525,13 @@ def upload_checkpoint(return_page: str):
         ckpt.save(zip_path)
 
         with zipfile.ZipFile(zip_path, mode='r') as z:
-            z.extractall(ckpt_dir)
+            for member in z.namelist():
+                member_path = os.path.realpath(os.path.join(ckpt_dir, member))
+                if not member_path.startswith(os.path.realpath(ckpt_dir)):
+                    errors.append('Invalid zip file: contains path traversal entry.')
+                    break
+            else:
+                z.extractall(ckpt_dir)
 
         for root, _, fnames in os.walk(ckpt_dir):
             ckpt_paths += [os.path.join(root, fname) for fname in fnames if fname.endswith('.pt')]
@@ -567,7 +573,7 @@ def download_checkpoint(checkpoint: int):
 
     :param checkpoint: The name of the checkpoint to download.
     """
-    ckpt = db.query_db(f'SELECT * FROM ckpt WHERE id = {checkpoint}', one=True)
+    ckpt = db.query_db('SELECT * FROM ckpt WHERE id = ?', (checkpoint,), one=True)
     models = db.get_models(checkpoint)
 
     model_data = io.BytesIO()
@@ -583,7 +589,7 @@ def download_checkpoint(checkpoint: int):
         model_data,
         mimetype='application/zip',
         as_attachment=True,
-        attachment_filename=f'{ckpt["ckpt_name"]}.zip',
+        download_name=f'{ckpt["ckpt_name"]}.zip',
         cache_timeout=-1
     )
 

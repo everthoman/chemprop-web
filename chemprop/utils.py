@@ -108,7 +108,7 @@ def load_checkpoint(
         debug = info = print
 
     # Load model and args
-    state = torch.load(path, map_location=lambda storage, loc: storage)
+    state = torch.load(path, map_location=lambda storage, loc: storage, weights_only=False)
     args = TrainArgs()
     args.from_dict(vars(state["args"]), skip_unsettable=True)
     loaded_state_dict = state["state_dict"]
@@ -209,7 +209,7 @@ def load_frzn_model(
     """
     debug = logger.debug if logger is not None else print
 
-    loaded_mpnn_model = torch.load(path, map_location=lambda storage, loc: storage)
+    loaded_mpnn_model = torch.load(path, map_location=lambda storage, loc: storage, weights_only=False)
     loaded_state_dict = loaded_mpnn_model["state_dict"]
     loaded_args = loaded_mpnn_model["args"]
 
@@ -414,7 +414,7 @@ def load_scalers(
     :return: A tuple with the data :class:`~chemprop.data.scaler.StandardScaler`
              and features :class:`~chemprop.data.scaler.StandardScaler`.
     """
-    state = torch.load(path, map_location=lambda storage, loc: storage)
+    state = torch.load(path, map_location=lambda storage, loc: storage, weights_only=False)
 
     if state["data_scaler"] is not None:
         scaler = StandardScaler(state["data_scaler"]["means"], state["data_scaler"]["stds"])
@@ -469,7 +469,7 @@ def load_args(path: str) -> TrainArgs:
     """
     args = TrainArgs()
     args.from_dict(
-        vars(torch.load(path, map_location=lambda storage, loc: storage)["args"]),
+        vars(torch.load(path, map_location=lambda storage, loc: storage, weights_only=False)["args"]),
         skip_unsettable=True,
     )
 

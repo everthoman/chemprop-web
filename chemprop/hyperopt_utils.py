@@ -5,8 +5,11 @@ from typing import List, Dict
 import csv
 import json
 import logging
+import warnings
 
-from hyperopt import Trials, hp
+with warnings.catch_warnings():
+    warnings.filterwarnings('ignore', message='pkg_resources is deprecated')
+    from hyperopt import Trials, hp
 import numpy as np
 
 from chemprop.constants import HYPEROPT_SEED_FILE_NAME
