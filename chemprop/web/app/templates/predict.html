@@ -147,7 +147,9 @@
             <hr>
         {% endfor %}
         {% if show_more > 0 %}
-            <p>... and {{ show_more }} more. Download file for full predictions.</p>
+            <div class="alert alert-info">
+                Showing 10 of {{ show_more + 10 }} predictions. <a href="{{ url_for('download_predictions') }}">Download the full CSV</a> to see all results.
+            </div>
         {% endif %}
     {% endif %}
 {% endblock %}

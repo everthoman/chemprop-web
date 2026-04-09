@@ -53,17 +53,13 @@ def progress_bar(args: TrainArgs, progress: mp.Value):
     :param args: Arguments.
     :param progress: The current progress.
     """
-    # no code to handle crashes in model training yet, though
-    current_epoch = -1
-    while current_epoch < args.epochs - 1:
-        if os.path.exists(os.path.join(args.save_dir, 'verbose.log')):
-            with open(os.path.join(args.save_dir, 'verbose.log'), 'r') as f:
-                content = f.read()
-                if 'Epoch ' + str(current_epoch + 1) in content:
-                    current_epoch += 1
-                    progress.value = (current_epoch + 1) * 100 / args.epochs
-        else:
-            pass
+    total_epochs = args.epochs * args.ensemble_size
+    log_path = os.path.join(args.save_dir, 'verbose.log')
+    while progress.value < 100:
+        if os.path.exists(log_path):
+            with open(log_path, 'r') as f:
+                epochs_done = f.read().count('Epoch ')
+            progress.value = min(epochs_done * 100 / total_epochs, 100)
         time.sleep(0.5)
 
 

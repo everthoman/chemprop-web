@@ -19,7 +19,8 @@
                     <a href="{{ url_for('download_data', dataset=dataset['id']) }}">
                         <button class="btn btn-default btn-sm">Download</button>
                     </a>
-                    <a href="{{ url_for('delete_data', dataset=dataset['id']) }}">
+                    <a href="{{ url_for('delete_data', dataset=dataset['id']) }}"
+                       onclick="return confirm('Delete dataset \'{{ dataset['dataset_name'] }}\'? This cannot be undone.')">
                         <button class="btn btn-danger btn-sm">Delete</button>
                     </a>
                 </th>

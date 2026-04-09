@@ -15,7 +15,7 @@ from chemprop.web.utils import clear_temp_folder, set_root_folder
 
 
 class WebArgs(Tap):
-    host: str = '127.0.0.1'  # Host IP address
+    host: str = '172.21.65.193'  # Host IP address
     port: int = 5000  # Port
     debug: bool = False  # Whether to run in debug mode
     demo: bool = False  # Display only demo features
