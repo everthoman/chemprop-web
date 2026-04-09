@@ -175,7 +175,8 @@
                         var allY = task.train.map(d => d[1]).concat(task.test.map(d => d[1]));
                         var minVal = Math.min.apply(null, allX.concat(allY));
                         var maxVal = Math.max.apply(null, allX.concat(allY));
-                        var pad = (maxVal - minVal) * 0.05;
+                        var axisMin = Math.floor(minVal);
+                        var axisMax = Math.ceil(maxVal);
 
                         new Chart(ctx, {
                             type: 'scatter',
@@ -196,20 +197,21 @@
                                     {
                                         label: 'y = x',
                                         type: 'line',
-                                        data: [{x: minVal - pad, y: minVal - pad}, {x: maxVal + pad, y: maxVal + pad}],
+                                        data: [{x: axisMin, y: axisMin}, {x: axisMax, y: axisMax}],
                                         borderColor: 'black',
                                         borderWidth: 1.5,
                                         borderDash: [6, 4],
                                         pointRadius: 0,
+                                        pointStyle: 'line',
                                         fill: false,
                                     }
                                 ]
                             },
                             options: {
-                                plugins: { legend: { display: true } },
+                                plugins: { legend: { display: true, labels: { filter: item => item.text !== 'y = x' } } },
                                 scales: {
-                                    x: { title: { display: true, text: 'Experimental' } },
-                                    y: { title: { display: true, text: 'Predicted' } }
+                                    x: { title: { display: true, text: 'Experimental' }, min: axisMin, max: axisMax, ticks: { stepSize: 1 } },
+                                    y: { title: { display: true, text: 'Predicted' }, min: axisMin, max: axisMax, ticks: { stepSize: 1 } }
                                 }
                             }
                         });
