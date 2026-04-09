@@ -22,7 +22,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath
 
 from chemprop.args import PredictArgs, TrainArgs
 from chemprop.constants import MODEL_FILE_NAME, TRAIN_LOGGER_NAME
-from chemprop.data import get_data, get_header, get_smiles, get_task_names, validate_data
+from chemprop.data import get_data, get_header, get_smiles, get_task_names, validate_data, split_data
 from chemprop.train import make_predictions, run_training
 from chemprop.utils import create_logger, load_task_names, load_args
 
@@ -276,12 +276,91 @@ def train():
                     save_path = os.path.join(app.config['CHECKPOINT_FOLDER'], f'{model_id}.pt')
                     shutil.move(os.path.join(args.save_dir, root, fname), save_path)
 
+    # Generate visualization data
+    plot_data = None
+    if dataset_type in ['regression', 'classification']:
+        try:
+            model_paths = [os.path.join(app.config['CHECKPOINT_FOLDER'], f'{m["id"]}.pt')
+                           for m in db.get_models(ckpt_id)]
+
+            # Reload data fresh from CSV — run_training scales targets in-place,
+            # so reusing `data` here would give scaled targets against unscaled predictions.
+            fresh_data = get_data(path=data_path, smiles_columns=args.smiles_columns)
+            train_split, _, test_split = split_data(
+                data=fresh_data,
+                split_type=args.split_type,
+                sizes=args.split_sizes,
+                key_molecule_index=args.split_key_molecule,
+                seed=args.seed,
+                num_folds=args.num_folds,
+                args=args,
+            )
+
+            pred_arguments = [
+                '--test_path', 'None',
+                '--preds_path', os.path.join(app.config['TEMP_FOLDER'], 'train_plot_preds.csv'),
+                '--checkpoint_paths', *model_paths,
+            ]
+            if not args.cuda:
+                pred_arguments.append('--no_cuda')
+            elif hasattr(args, 'gpu') and args.gpu is not None:
+                pred_arguments += ['--gpu', str(args.gpu)]
+
+            pred_args = PredictArgs().parse_args(pred_arguments)
+
+            def to_smiles_list(dataset):
+                smiles = dataset.smiles()
+                if smiles and isinstance(smiles[0], str):
+                    return [[s] for s in smiles]
+                return smiles
+
+            if dataset_type == 'regression':
+                train_preds = make_predictions(args=pred_args, smiles=to_smiles_list(train_split), return_uncertainty=False)
+                test_preds = make_predictions(args=pred_args, smiles=to_smiles_list(test_split), return_uncertainty=False)
+                train_targets = train_split.targets()
+                test_targets = test_split.targets()
+
+                plot_data = []
+                for i, task_name in enumerate(args.task_names):
+                    train_pts = [[train_targets[j][i], train_preds[j][i]]
+                                 for j in range(len(train_preds))
+                                 if train_preds[j] is not None and train_targets[j][i] is not None]
+                    test_pts = [[test_targets[j][i], test_preds[j][i]]
+                                for j in range(len(test_preds))
+                                if test_preds[j] is not None and test_targets[j][i] is not None]
+                    plot_data.append({'name': task_name, 'train': train_pts, 'test': test_pts})
+
+            elif dataset_type == 'classification':
+                from sklearn.metrics import roc_curve, auc as sklearn_auc
+                test_preds = make_predictions(args=pred_args, smiles=to_smiles_list(test_split), return_uncertainty=False)
+                test_targets = test_split.targets()
+
+                plot_data = []
+                for i, task_name in enumerate(args.task_names):
+                    t = [test_targets[j][i] for j in range(len(test_preds))
+                         if test_preds[j] is not None and test_targets[j][i] is not None]
+                    p = [test_preds[j][i] for j in range(len(test_preds))
+                         if test_preds[j] is not None and test_targets[j][i] is not None]
+                    if len(set(t)) == 2:
+                        fpr, tpr, _ = roc_curve(t, p)
+                        roc_auc = sklearn_auc(fpr, tpr)
+                        plot_data.append({
+                            'name': task_name,
+                            'fpr': fpr.tolist(),
+                            'tpr': tpr.tolist(),
+                            'auc': round(roc_auc, 3),
+                        })
+        except Exception as e:
+            warnings.append(f'Could not generate visualization: {str(e)}')
+
     return render_train(trained=True,
                         metric=args.metric,
                         num_tasks=len(args.task_names),
                         task_names=args.task_names,
                         task_scores=format_float_list(task_scores),
                         mean_score=format_float(np.mean(task_scores)),
+                        dataset_type=dataset_type,
+                        plot_data=plot_data,
                         warnings=warnings,
                         errors=errors)
 

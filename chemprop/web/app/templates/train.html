@@ -80,9 +80,28 @@
     {% endif %}
 
     <script type=text/javascript>
+        $(document).ready(function() {
+            if ($('.alert-danger').length > 0) {
+                $('#train').prop('disabled', true);
+            }
+            $(document).on('click', '.alert-danger .close', function() {
+                setTimeout(function() {
+                    if ($('.alert-danger').length === 0) {
+                        $('#train').prop('disabled', false);
+                    }
+                }, 300);
+            });
+        });
+
         $("#train").click(function() {
             document.getElementById("train").form.submit();
-            document.getElementById("train").disabled = "disabled";
+            document.getElementById("train").style.display = "none";
+            document.getElementById("training").style.display = "";
+            document.getElementById("myProgress").style.display = "";
+            document.getElementById("myBar").style.width = "2%";
+            document.getElementById("myBar").style.backgroundColor = "hsl(0, 80%, 45%)";
+            var results = document.getElementById("trainResults");
+            if (results) results.style.display = "none";
         });
 
         function refresh() {
@@ -117,6 +136,7 @@
         <div id="myBar"></div>
     </div>
 
+    <div id="trainResults">
     {% if trained %}
         <h3>Training complete!</h3>
 
@@ -129,6 +149,115 @@
             <p>{{ task_names[i] }}: {{ task_scores[i] }} {{ metric }}</p>
         {% endfor %}
 
+        {% if plot_data %}
+            <hr>
+            <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+            {% for task in plot_data %}
+                <h4>
+                    {% if dataset_type == 'regression' %}
+                        {{ task.name }}: Predicted vs Experimental
+                    {% else %}
+                        {{ task.name }}: ROC Curve (AUC = {{ task.auc }})
+                    {% endif %}
+                </h4>
+                <canvas id="chart_{{ loop.index0 }}" style="max-width:500px; max-height:500px;"></canvas>
+            {% endfor %}
+
+            <script>
+                var plotData = {{ plot_data | tojson }};
+                var datasetType = {{ dataset_type | tojson }};
+
+                plotData.forEach(function(task, i) {
+                    var ctx = document.getElementById('chart_' + i).getContext('2d');
+
+                    if (datasetType === 'regression') {
+                        var allX = task.train.map(d => d[0]).concat(task.test.map(d => d[0]));
+                        var allY = task.train.map(d => d[1]).concat(task.test.map(d => d[1]));
+                        var minVal = Math.min.apply(null, allX.concat(allY));
+                        var maxVal = Math.max.apply(null, allX.concat(allY));
+                        var pad = (maxVal - minVal) * 0.05;
+
+                        new Chart(ctx, {
+                            type: 'scatter',
+                            data: {
+                                datasets: [
+                                    {
+                                        label: 'Train',
+                                        data: task.train.map(d => ({x: d[0], y: d[1]})),
+                                        backgroundColor: 'rgba(54, 162, 235, 0.4)',
+                                        pointRadius: 3,
+                                    },
+                                    {
+                                        label: 'Test',
+                                        data: task.test.map(d => ({x: d[0], y: d[1]})),
+                                        backgroundColor: 'rgba(255, 99, 132, 0.7)',
+                                        pointRadius: 4,
+                                    },
+                                    {
+                                        label: 'y = x',
+                                        type: 'line',
+                                        data: [{x: minVal - pad, y: minVal - pad}, {x: maxVal + pad, y: maxVal + pad}],
+                                        borderColor: 'black',
+                                        borderWidth: 1.5,
+                                        borderDash: [6, 4],
+                                        pointRadius: 0,
+                                        fill: false,
+                                    }
+                                ]
+                            },
+                            options: {
+                                plugins: { legend: { display: true } },
+                                scales: {
+                                    x: { title: { display: true, text: 'Experimental' } },
+                                    y: { title: { display: true, text: 'Predicted' } }
+                                }
+                            }
+                        });
+
+                    } else {
+                        new Chart(ctx, {
+                            type: 'line',
+                            data: {
+                                datasets: [
+                                    {
+                                        label: task.name + ' (AUC = ' + task.auc + ')',
+                                        data: task.fpr.map((f, idx) => ({x: f, y: task.tpr[idx]})),
+                                        borderColor: 'rgba(54, 162, 235, 1)',
+                                        backgroundColor: 'rgba(54, 162, 235, 0.1)',
+                                        fill: true,
+                                        pointRadius: 0,
+                                        tension: 0,
+                                    },
+                                    {
+                                        label: 'Random',
+                                        data: [{x: 0, y: 0}, {x: 1, y: 1}],
+                                        borderColor: 'rgba(150, 150, 150, 1)',
+                                        borderDash: [6, 4],
+                                        fill: false,
+                                        pointRadius: 0,
+                                    }
+                                ]
+                            },
+                            options: {
+                                scales: {
+                                    x: {
+                                        type: 'linear',
+                                        title: { display: true, text: 'False Positive Rate' },
+                                        min: 0, max: 1,
+                                    },
+                                    y: {
+                                        title: { display: true, text: 'True Positive Rate' },
+                                        min: 0, max: 1,
+                                    }
+                                }
+                            }
+                        });
+                    }
+                });
+            </script>
+        {% endif %}
+
     {% endif %}
+    </div>
 
 {% endblock %}
