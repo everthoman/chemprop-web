@@ -10,7 +10,10 @@
 
     {% if not config['DEMO'] %}
     <h2>Training</h2>
-    <p>To train an MPNN, go to the <a href="{{ url_for('train') }}">Train</a> page, upload a dataset or select a dataset which has already been uploaded, set the desired parameters, name the model, and then click "Train".</p>
+    <p>To train an MPNN, go to the <a href="{{ url_for('train') }}">Train</a> page, upload a dataset or select a dataset which has already been uploaded, set the desired parameters, name the model, and then click "Train". Optionally, upload a hyperparameter config JSON from the Hyperopt page to use optimized settings.</p>
+
+    <h2>Hyperparameter Optimization</h2>
+    <p>To search for the best model hyperparameters, go to the <a href="{{ url_for('hyperopt_page') }}">Hyperopt</a> page. Select a dataset, choose which parameter groups to search (architecture and/or learning rate), set the number of trials, and click "Start". The search uses Bayesian optimization (TPE): the first half of trials explores randomly, the second half is guided by results so far. When complete, download the config JSON and upload it on the <a href="{{ url_for('train') }}">Train</a> page to train a final model with the best settings at your chosen epoch count and ensemble size.</p>
     {% endif %}
 
     <h2>Predicting</h2>

@@ -42,6 +42,11 @@
             <option value="10">10</option>
         </select>
 
+        <h5>Hyperopt config <small class="text-muted">(optional)</small></h5>
+        <input type="file" id="configFileInput" accept=".json">
+        <input type="hidden" name="configFileContent" id="configFileContent">
+        <small class="text-muted"> &nbsp; Upload a config JSON from the Hyperopt page to use those hyperparameters</small>
+
         <h5>Checkpoint name</h5>
         <!--TODO: Verify that name isn't already in use-->
         <input type="text" name="checkpointName" placeholder="name" required>
@@ -78,6 +83,21 @@
             {{ error_message(error) }}
         {% endfor %}
     {% endif %}
+
+    <script type=text/javascript>
+        document.getElementById('configFileInput').addEventListener('change', function(e) {
+            var file = e.target.files[0];
+            if (file) {
+                var reader = new FileReader();
+                reader.onload = function(evt) {
+                    document.getElementById('configFileContent').value = evt.target.result;
+                };
+                reader.readAsText(file);
+            } else {
+                document.getElementById('configFileContent').value = '';
+            }
+        });
+    </script>
 
     <script type=text/javascript>
         $(document).ready(function() {

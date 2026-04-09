@@ -33,6 +33,7 @@
             <li><a href="{{ url_for('home') }}">Home</a></li>
             {% if not config['DEMO'] %}
             <li><a href="{{ url_for('train') }}">Train</a></li>
+            <li><a href="{{ url_for('hyperopt_page') }}">Hyperopt</a></li>
             {% endif %}
             <li><a href="{{ url_for('predict') }}">Predict</a></li>
             {% if not config['DEMO'] %}

@@ -1,0 +1,165 @@
+{% extends "layout.html" %}
+{% from 'macros.html' import add_data, error_message, warning_message %}
+
+{% block title %}
+    <h1>Hyperparameter Optimization</h1>
+{% endblock %}
+
+{% block content %}
+    {{ add_data('hyperopt', data_upload_warnings, data_upload_errors) }}
+
+    <hr>
+
+    <h3>Hyperparameter Optimization</h3>
+    <p>Searches for the best model hyperparameters using Bayesian optimization (TPE), then trains a final model with the best settings.</p>
+
+    <form id="hyperoptForm" method="POST">
+        <h5>Data</h5>
+        <select name="dataName" required>
+            {% for dataset in datasets %}
+                <option value="{{ dataset[0] }}">{{ dataset[1] }}</option>
+            {% endfor %}
+        </select>
+        <br>
+
+        <h5>Dataset type</h5>
+        <div class="btn-group" id="datasetTypeSelect" data-toggle="buttons">
+          <label class="btn btn-primary active">
+            <input type="radio" name="datasetType" id="regression" value="regression" autocomplete="off"> Regression
+          </label>
+          <label class="btn btn-primary">
+            <input type="radio" name="datasetType" id="classification" value="classification" autocomplete="off"> Classification
+          </label>
+        </div>
+        <br>
+
+        <h5>Epochs per trial</h5>
+        <input type="number" name="epochs" min="1" step="1" value="30" required>
+
+        <h5>Number of trials</h5>
+        <input type="number" name="numIters" min="1" step="1" value="20" required>
+        <small class="text-muted"> &nbsp; (first half will be random, second half guided by TPE)</small>
+
+        <h5>Search parameters</h5>
+        <div>
+            <label><input type="checkbox" name="searchKeywords" value="basic" checked> Basic &mdash; depth, FFN layers, dropout, hidden size</label>
+        </div>
+        <div>
+            <label><input type="checkbox" name="searchKeywords" value="learning_rate"> Learning rate &mdash; max LR, LR schedule, warmup epochs</label>
+        </div>
+
+        {% if cuda %}
+            <h5>GPU</h5>
+            <select name="gpu">
+                <option value="None">None</option>
+                {% for gpu in gpus %}
+                    <option value="{{gpu}}" {% if loop.first %}selected{% endif %}>{{gpu}}</option>
+                {% endfor %}
+            </select>
+            <br>
+            <br>
+        {% endif %}
+
+        <br>
+        <br>
+
+        <button id="start" class="btn btn-primary btn-md">Start</button>
+        <button id="running" class="btn btn-default btn-md disabled" disabled="disabled" style="display:none">Running</button>
+    </form>
+
+    <br>
+
+    {% if warnings %}
+        {% for warning in warnings %}
+            {{ warning_message(warning) }}
+        {% endfor %}
+    {% endif %}
+
+    {% if errors %}
+        {% for error in errors %}
+            {{ error_message(error) }}
+        {% endfor %}
+    {% endif %}
+
+    <script type=text/javascript>
+        $(document).ready(function() {
+            if ($('.alert-danger').length > 0) {
+                $('#start').prop('disabled', true);
+            }
+            $(document).on('click', '.alert-danger .close', function() {
+                setTimeout(function() {
+                    if ($('.alert-danger').length === 0) {
+                        $('#start').prop('disabled', false);
+                    }
+                }, 300);
+            });
+        });
+
+        $("#start").click(function() {
+            document.getElementById("hyperoptForm").submit();
+            document.getElementById("start").style.display = "none";
+            document.getElementById("running").style.display = "";
+            document.getElementById("myProgress").style.display = "";
+            document.getElementById("myBar").style.width = "2%";
+            document.getElementById("myBar").style.backgroundColor = "hsl(0, 80%, 45%)";
+            document.getElementById("progressLabel").style.display = "";
+            var results = document.getElementById("hyperoptResults");
+            if (results) results.style.display = "none";
+        });
+
+        function refresh() {
+            $.post("receiver", function(data){
+                if (data.training == 1) {
+                    document.getElementById("myProgress").style.display = "";
+                    document.getElementById("myBar").style.width = data.progress + "%";
+                    document.getElementById("myBar").style.backgroundColor = "hsl(" + (data.progress * 1.2) + ", 80%, 45%)";
+                    document.getElementById("progressLabel").style.display = "";
+                    document.getElementById("progressLabel").textContent = "Trials: " + Math.round(data.progress) + "%";
+                    document.getElementById("start").style.display = "none";
+                    document.getElementById("running").style.display = "";
+                }
+            });
+        }
+        setInterval(refresh, 1000);
+    </script>
+
+    <style>
+        #myProgress {
+            width: 100%;
+            background-color: #ddd;
+        }
+        #myBar {
+            width: 0%;
+            height: 30px;
+            background-color: hsl(0, 80%, 45%);
+        }
+    </style>
+
+    <div id="myProgress" style="display:none">
+        <div id="myBar"></div>
+    </div>
+    <small id="progressLabel" style="display:none; color:#555;"></small>
+
+    <br>
+
+    <div id="hyperoptResults">
+    {% if completed %}
+        <h3>Optimization complete!</h3>
+
+        <h4>Best hyperparameters found</h4>
+        <table class="table table-bordered table-condensed" style="max-width:400px;">
+            <thead><tr><th>Parameter</th><th>Value</th></tr></thead>
+            <tbody>
+                {% for key, value in best_config.items() | sort %}
+                    <tr><td>{{ key }}</td><td>{{ "%.6g" | format(value) if value is number else value }}</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+
+        <a href="{{ url_for('download_hyperopt_config') }}" class="btn btn-success btn-sm">Download config JSON</a>
+        <br><br>
+        <p class="text-muted">Upload this file on the <a href="{{ url_for('train') }}">Train</a> page to use these hyperparameters.</p>
+    {% endif %}
+    </div>
+
+{% endblock %}

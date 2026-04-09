@@ -20,7 +20,7 @@ from chemprop.web.app import app, db
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__)))))
 
-from chemprop.args import PredictArgs, TrainArgs
+from chemprop.args import PredictArgs, TrainArgs, HyperoptArgs
 from chemprop.constants import MODEL_FILE_NAME, TRAIN_LOGGER_NAME
 from chemprop.data import get_data, get_header, get_smiles, get_task_names, validate_data, split_data
 from chemprop.train import make_predictions, run_training
@@ -198,13 +198,24 @@ def train():
     dataset_type = request.form.get('datasetType', 'regression')
     use_progress_bar = request.form.get('useProgressBar', 'True') == 'True'
 
+    # Handle optional hyperopt config (content sent as hidden field via FileReader)
+    config_content = request.form.get('configFileContent', '').strip()
+    config_path = None
+    if config_content:
+        config_path = os.path.join(app.config['TEMP_FOLDER'], 'uploaded_config.json')
+        with open(config_path, 'w') as f:
+            f.write(config_content)
+
     # Create and modify args
-    args = TrainArgs().parse_args([
+    train_arg_list = [
         '--data_path', data_path,
         '--dataset_type', dataset_type,
         '--epochs', str(epochs),
         '--ensemble_size', str(ensemble_size),
-    ])
+    ]
+    if config_path is not None:
+        train_arg_list += ['--config_path', config_path]
+    args = TrainArgs().parse_args(train_arg_list)
 
     # Get task names
     args.task_names = get_task_names(path=data_path, smiles_columns=args.smiles_columns)
@@ -365,6 +376,119 @@ def train():
                         errors=errors)
 
 
+def hyperopt_progress_bar(hyperopt_checkpoint_dir: str, num_iters: int, progress: mp.Value):
+    """
+    Updates a progress bar during hyperparameter optimization by counting completed trials.
+
+    :param hyperopt_checkpoint_dir: Directory where completed trial .pkl files are written.
+    :param num_iters: Total number of hyperopt trials.
+    :param progress: Shared value tracking progress (0–100).
+    """
+    while progress.value < 100:
+        if os.path.exists(hyperopt_checkpoint_dir):
+            n_done = len([f for f in os.listdir(hyperopt_checkpoint_dir) if f.endswith('.pkl')])
+            progress.value = min(n_done * 100 / num_iters, 99)
+        time.sleep(1)
+
+
+def render_hyperopt(**kwargs):
+    """Renders the hyperopt page with specified kwargs."""
+    data_upload_warnings, data_upload_errors = get_upload_warnings_errors('data')
+    return render_template('hyperopt.html',
+                           datasets=db.get_datasets(request.cookies.get('currentUser')),
+                           cuda=app.config['CUDA'],
+                           gpus=app.config['GPUS'],
+                           data_upload_warnings=data_upload_warnings,
+                           data_upload_errors=data_upload_errors,
+                           users=db.get_all_users(),
+                           **kwargs)
+
+
+@app.route('/hyperopt', methods=['GET', 'POST'])
+@check_not_demo
+def hyperopt_page():
+    """Renders the hyperopt page and runs hyperparameter optimization if request method is POST."""
+    global PROGRESS, TRAINING
+
+    warnings, errors = [], []
+
+    if request.method == 'GET':
+        return render_hyperopt()
+
+    # Get form fields
+    data_name = request.form['dataName']
+    epochs = int(request.form['epochs'])
+    num_iters = int(request.form['numIters'])
+    dataset_type = request.form.get('datasetType', 'regression')
+    gpu = request.form.get('gpu')
+    search_keywords = request.form.getlist('searchKeywords') or ['basic']
+
+    data_path = os.path.join(app.config['DATA_FOLDER'], f'{data_name}.csv')
+
+    # Validate data type
+    data = get_data(path=data_path, smiles_columns=None)
+    targets = data.targets()
+    unique_targets = {target for row in targets for target in row if target is not None}
+
+    if dataset_type == 'classification' and len(unique_targets - {0, 1}) > 0:
+        errors.append('Selected classification dataset but not all labels are 0 or 1. Select regression instead.')
+        return render_hyperopt(warnings=warnings, errors=errors)
+
+    if dataset_type == 'regression' and unique_targets <= {0, 1}:
+        errors.append('Selected regression dataset but all labels are 0 or 1. Select classification instead.')
+        return render_hyperopt(warnings=warnings, errors=errors)
+
+    with TemporaryDirectory() as temp_dir:
+        hyperopt_save_dir = os.path.join(temp_dir, 'hyperopt')
+        os.makedirs(hyperopt_save_dir, exist_ok=True)
+        config_save_path = os.path.join(app.config['TEMP_FOLDER'], 'hyperopt_config.json')
+
+        hyper_args_list = [
+            '--data_path', data_path,
+            '--dataset_type', dataset_type,
+            '--epochs', str(epochs),
+            '--num_iters', str(num_iters),
+            '--config_save_path', config_save_path,
+            '--save_dir', hyperopt_save_dir,
+            '--search_parameter_keywords', *search_keywords,
+        ]
+
+        if gpu is not None:
+            if gpu == 'None':
+                hyper_args_list.append('--no_cuda')
+            else:
+                hyper_args_list += ['--gpu', gpu]
+
+        hyper_args = HyperoptArgs().parse_args(hyper_args_list)
+        hyper_args.task_names = get_task_names(path=data_path, smiles_columns=hyper_args.smiles_columns)
+
+        # Start progress monitoring
+        process = mp.Process(target=hyperopt_progress_bar,
+                             args=(hyper_args.hyperopt_checkpoint_dir, num_iters, PROGRESS))
+        process.start()
+        TRAINING = 1
+
+        # Run hyperparameter optimization
+        from chemprop.hyperparameter_optimization import hyperopt as run_hyperopt
+        run_hyperopt(hyper_args)
+
+        PROGRESS.value = 100
+        process.join()
+        TRAINING = 0
+        PROGRESS = mp.Value('d', 0.0)
+
+    # Load best hyperparams from saved config
+    with open(config_save_path) as f:
+        best_config = json.load(f)
+
+    return render_hyperopt(
+        completed=True,
+        best_config=best_config,
+        warnings=warnings,
+        errors=errors,
+    )
+
+
 def render_predict(**kwargs):
     """Renders the predict page with specified kwargs"""
     checkpoint_upload_warnings, checkpoint_upload_errors = get_upload_warnings_errors('checkpoint')
@@ -470,6 +594,14 @@ def predict():
 def download_predictions():
     """Downloads predictions as a .csv file."""
     return send_from_directory(app.config['TEMP_FOLDER'], app.config['PREDICTIONS_FILENAME'], as_attachment=True, cache_timeout=-1)
+
+
+@app.route('/download_hyperopt_config')
+@check_not_demo
+def download_hyperopt_config():
+    """Downloads the best hyperparameter config from the last hyperopt run as a .json file."""
+    return send_from_directory(app.config['TEMP_FOLDER'], 'hyperopt_config.json', as_attachment=True,
+                               download_name='hyperopt_config.json', cache_timeout=-1)
 
 
 @app.route('/data')
