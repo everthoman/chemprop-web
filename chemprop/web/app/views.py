@@ -269,6 +269,7 @@ def train():
         task_scores = run_training(args, data, logger)[args.metrics[0]]
 
         if use_progress_bar:
+            PROGRESS.value = 100
             process.join()
 
             # Reset globals
