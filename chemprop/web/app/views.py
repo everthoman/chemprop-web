@@ -264,6 +264,13 @@ def train():
             process.start()
             TRAINING = 1
 
+        # Clear stale logger so create_logger writes to this run's save_dir
+        import logging as _logging
+        if TRAIN_LOGGER_NAME in _logging.root.manager.loggerDict:
+            stale = _logging.getLogger(TRAIN_LOGGER_NAME)
+            stale.handlers.clear()
+            del _logging.root.manager.loggerDict[TRAIN_LOGGER_NAME]
+
         # Run training
         logger = create_logger(name=TRAIN_LOGGER_NAME, save_dir=args.save_dir, quiet=args.quiet)
         task_scores = run_training(args, data, logger)[args.metrics[0]]
