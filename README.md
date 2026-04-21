@@ -1,8 +1,8 @@
-# chemprop-web
+# chemprop-web v1.8.0
 
 A maintained fork of [Chemprop v1.7.1](https://github.com/chemprop/chemprop/tree/v1.7.1) that keeps the browser-based web interface working with modern Python and library versions.
 
-Upstream Chemprop v2 dropped the web app (`chemprop/web/`). This fork preserves it.
+Upstream Chemprop v2 dropped the web app (`chemprop/web/`). This fork preserves and extends it.
 
 **For full documentation** on the model, training options, data formats, and command-line usage, see the [original Chemprop v1.7.1 README](https://github.com/chemprop/chemprop/blob/v1.7.1/README.md).
 
@@ -56,6 +56,8 @@ Runs Bayesian hyperparameter optimization (TPE) to find the best model settings 
 
 Select a trained checkpoint, enter SMILES (typed, drawn, or uploaded as CSV), and click **Predict**. Results can be downloaded as CSV.
 
+Each prediction result includes an **atom contribution map**: a 2D structure overlaid with a Gaussian heatmap showing which atoms increase (green) or decrease (red/pink) the predicted value, computed via gradient × activation (GradCAM-style) and averaged across ensemble members.
+
 ---
 
 ## Changes relative to Chemprop v1.7.1
@@ -79,13 +81,14 @@ Select a trained checkpoint, enter SMILES (typed, drawn, or uploaded as CSV), an
 ### Web app additions
 
 - **Hyperparameter optimization page** — Bayesian search (TPE) via hyperopt, with trial progress bar and downloadable config JSON
-- **Post-training plots** — scatter plot (regression) and ROC curve (classification) after training
+- **Post-training plots** — scatter plot (regression) and ROC curve (classification) after training; scatter plot persists when switching tabs
+- **Hover attribution on scatter plot** — hovering over any train/test point shows its 2D structure with a GradCAM atom contribution map in a floating tooltip
+- **Atom attribution maps on Predict page** — per-prediction heatmap showing positive/negative atom contributions (green/red), averaged across ensemble
 - **Config JSON upload on Train page** — apply hyperopt results at training time
 - GPU 0 selected by default when CUDA is available
 - Progress bar color transitions red → green during training
 - Delete buttons show a confirmation dialog with the item name
 - Predictions page shows total count and download link when results are truncated
-- Footer version updated to v1.7.1
 
 ### Warning suppression
 
