@@ -14,6 +14,7 @@ import zipfile
 from flask import json, jsonify, redirect, render_template, request, send_file, send_from_directory, url_for
 import numpy as np
 from rdkit import Chem
+import torch
 from werkzeug.utils import secure_filename
 
 from chemprop.web.app import app, db
@@ -25,6 +26,7 @@ from chemprop.constants import MODEL_FILE_NAME, TRAIN_LOGGER_NAME
 from chemprop.data import get_data, get_header, get_smiles, get_task_names, validate_data, split_data
 from chemprop.train import make_predictions, run_training
 from chemprop.utils import create_logger, load_task_names, load_args
+from chemprop.web.app.atom_attribution import compute_attributions
 
 TRAINING = 0
 PROGRESS = mp.Value('d', 0.0)
@@ -333,18 +335,26 @@ def train():
                     return [[s] for s in smiles]
                 return smiles
 
+            def flat_smiles(dataset):
+                smiles = dataset.smiles()
+                if smiles and isinstance(smiles[0], str):
+                    return smiles
+                return [s[0] for s in smiles]
+
             if dataset_type == 'regression':
                 train_preds = make_predictions(args=pred_args, smiles=to_smiles_list(train_split), return_uncertainty=False)
                 test_preds = make_predictions(args=pred_args, smiles=to_smiles_list(test_split), return_uncertainty=False)
                 train_targets = train_split.targets()
                 test_targets = test_split.targets()
+                train_smiles = flat_smiles(train_split)
+                test_smiles = flat_smiles(test_split)
 
                 plot_data = []
                 for i, task_name in enumerate(args.task_names):
-                    train_pts = [[train_targets[j][i], train_preds[j][i]]
+                    train_pts = [[train_targets[j][i], train_preds[j][i], train_smiles[j]]
                                  for j in range(len(train_preds))
                                  if train_preds[j] is not None and train_targets[j][i] is not None]
-                    test_pts = [[test_targets[j][i], test_preds[j][i]]
+                    test_pts = [[test_targets[j][i], test_preds[j][i], test_smiles[j]]
                                 for j in range(len(test_preds))
                                 if test_preds[j] is not None and test_targets[j][i] is not None]
                     plot_data.append({'name': task_name, 'train': train_pts, 'test': test_pts})
@@ -380,6 +390,7 @@ def train():
                         mean_score=format_float(np.mean(task_scores)),
                         dataset_type=dataset_type,
                         plot_data=plot_data,
+                        ckpt_id=ckpt_id,
                         warnings=warnings,
                         errors=errors)
 
@@ -587,6 +598,11 @@ def predict():
     invalid_smiles_warning = 'Invalid SMILES String'
     preds = [pred if pred is not None else [invalid_smiles_warning] * num_tasks for pred in preds]
 
+    # Compute atom attribution SVGs (best-effort; failures yield None)
+    flat_smiles = [s[0] for s in smiles[:10]]
+    device = None if (gpu is None or gpu == 'None') else torch.device(f'cuda:{gpu}')
+    attribution_svgs = compute_attributions(model_paths, flat_smiles, device=device)
+
     return render_predict(predicted=True,
                           smiles=smiles,
                           num_smiles=min(10, len(smiles)),
@@ -594,8 +610,34 @@ def predict():
                           task_names=task_names,
                           num_tasks=len(task_names),
                           preds=preds,
+                          attribution_svgs=attribution_svgs,
                           warnings=["List contains invalid SMILES strings"] if None in preds else None,
                           errors=["No SMILES strings given"] if len(preds) == 0 else None)
+
+
+@app.route('/get_attribution')
+def get_attribution():
+    """Returns an atom attribution SVG for a given SMILES and checkpoint."""
+    smiles = request.args.get('smiles', '')
+    ckpt_id = request.args.get('ckpt_id', '')
+
+    if not smiles or not ckpt_id:
+        return jsonify({'error': 'Missing smiles or ckpt_id'}), 400
+
+    models = db.get_models(ckpt_id)
+    if not models:
+        return jsonify({'error': 'No models found'}), 404
+
+    model_paths = [os.path.join(app.config['CHECKPOINT_FOLDER'], f'{m["id"]}.pt') for m in models]
+
+    try:
+        svgs = compute_attributions(model_paths, [smiles])
+        svg = svgs[0] if svgs else None
+        if svg is None:
+            return jsonify({'error': 'Attribution not available'}), 400
+        return jsonify({'svg': svg})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/download_predictions')

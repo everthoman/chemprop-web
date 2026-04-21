@@ -145,6 +145,8 @@ class MPNEncoder(nn.Module):
         a_input = torch.cat([f_atoms, a_message], dim=1)  # num_atoms x (atom_fdim + hidden)
         atom_hiddens = self.act_func(self.W_o(a_input))  # num_atoms x hidden
         atom_hiddens = self.dropout(atom_hiddens)  # num_atoms x hidden
+        self._atom_hiddens = atom_hiddens
+        self._a_scope = a_scope
 
         # bond hidden
         if self.is_atom_bond_targets:

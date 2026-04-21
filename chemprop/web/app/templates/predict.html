@@ -138,11 +138,23 @@
         <br>
 
         {% for i in range(num_smiles) %}
-            <p>SMILES: {{ smiles[i] }}</p>
-
-            {% for j in range(num_tasks) %}
-                <p>{{ task_names[j] }}: {{ preds[i][j] }}</p>
-            {% endfor %}
+            <div style="display:flex; align-items:flex-start; gap:24px; flex-wrap:wrap;">
+                {% if attribution_svgs and attribution_svgs[i] %}
+                    <div>
+                        {{ attribution_svgs[i] | safe }}
+                        <div style="font-size:0.8em; color:#666; text-align:center; margin-top:4px;">
+                            <span style="color:#2ecc71;">&#9632;</span> increases &nbsp;
+                            <span style="color:#e74c3c;">&#9632;</span> decreases prediction
+                        </div>
+                    </div>
+                {% endif %}
+                <div>
+                    <p><strong>SMILES:</strong> {{ smiles[i] }}</p>
+                    {% for j in range(num_tasks) %}
+                        <p>{{ task_names[j] }}: {{ preds[i][j] }}</p>
+                    {% endfor %}
+                </div>
+            </div>
 
             <hr>
         {% endfor %}

@@ -114,6 +114,7 @@
         });
 
         $("#train").click(function() {
+            sessionStorage.removeItem('cp_train');
             document.getElementById("train").form.submit();
             document.getElementById("train").style.display = "none";
             document.getElementById("training").style.display = "";
@@ -156,8 +157,141 @@
         <div id="myBar"></div>
     </div>
 
+    <!-- Chart.js and initCharts must be defined before trainResults so the inline call works -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <div id="struct-tooltip" style="display:none; position:fixed; z-index:9999; background:white; border:1px solid #ccc; border-radius:6px; box-shadow:0 4px 16px rgba(0,0,0,0.18); padding:8px 10px; pointer-events:none; max-width:450px;"></div>
+    <script>
+        function initCharts(plotData, datasetType, ckptId) {
+            var tooltip = document.getElementById('struct-tooltip');
+            var svgCache = {};
+            var hoverTimer = null;
+            var lastKey = null;
+
+            function positionTooltip(clientX, clientY) {
+                var w = tooltip.offsetWidth || 440;
+                var left = clientX + 18;
+                if (left + w > window.innerWidth - 10) left = clientX - w - 18;
+                var top = clientY - 60;
+                if (top < 10) top = 10;
+                tooltip.style.left = left + 'px';
+                tooltip.style.top  = top  + 'px';
+            }
+
+            function showLoading(clientX, clientY, actual, pred, split) {
+                tooltip.innerHTML =
+                    '<div style="font:12px monospace;color:#555;margin-bottom:4px">' +
+                    (split === 'train' ? 'Train' : 'Test') +
+                    ' &nbsp;|&nbsp; Exp: ' + actual.toFixed(3) +
+                    ' &nbsp;|&nbsp; Pred: ' + pred.toFixed(3) + '</div>' +
+                    '<div style="color:#aaa;font-size:12px">Loading structure\u2026</div>';
+                tooltip.style.display = 'block';
+                positionTooltip(clientX, clientY);
+            }
+
+            function showSVG(clientX, clientY, actual, pred, split, smiles, svg) {
+                tooltip.innerHTML =
+                    '<div style="font:12px monospace;color:#555;margin-bottom:2px">' +
+                    (split === 'train' ? 'Train' : 'Test') +
+                    ' &nbsp;|&nbsp; Exp: ' + actual.toFixed(3) +
+                    ' &nbsp;|&nbsp; Pred: ' + pred.toFixed(3) + '</div>' +
+                    svg +
+                    '<div style="font-size:0.72em;color:#666;text-align:center;margin-top:2px">' +
+                    '<span style="color:#2ecc71">&#9632;</span> increases &nbsp;' +
+                    '<span style="color:#e74c3c">&#9632;</span> decreases prediction</div>';
+                tooltip.style.display = 'block';
+                positionTooltip(clientX, clientY);
+            }
+
+            function hideTooltip() {
+                tooltip.style.display = 'none';
+                lastKey = null;
+                if (hoverTimer) { clearTimeout(hoverTimer); hoverTimer = null; }
+            }
+
+            function onPointHover(event, taskData, dsIdx, ptIdx) {
+                var split = dsIdx === 0 ? 'train' : 'test';
+                var pts = split === 'train' ? taskData.train : taskData.test;
+                if (!pts[ptIdx]) return;
+                var actual = pts[ptIdx][0], pred = pts[ptIdx][1], smiles = pts[ptIdx][2];
+                if (!smiles) return;
+                var cx = event.native.clientX, cy = event.native.clientY;
+                if (smiles === lastKey) {
+                    if (tooltip.style.display === 'block') positionTooltip(cx, cy);
+                    return;
+                }
+                lastKey = smiles;
+                if (hoverTimer) { clearTimeout(hoverTimer); hoverTimer = null; }
+                if (svgCache[smiles]) { showSVG(cx, cy, actual, pred, split, smiles, svgCache[smiles]); return; }
+                showLoading(cx, cy, actual, pred, split);
+                hoverTimer = setTimeout(function() {
+                    fetch('/get_attribution?smiles=' + encodeURIComponent(smiles) + '&ckpt_id=' + encodeURIComponent(ckptId))
+                        .then(function(r) { return r.json(); })
+                        .then(function(data) {
+                            if (data.svg) {
+                                svgCache[smiles] = data.svg;
+                                if (lastKey === smiles) showSVG(cx, cy, actual, pred, split, smiles, data.svg);
+                            }
+                        })
+                        .catch(function(e) { console.warn('Attribution fetch failed:', e); });
+                }, 300);
+            }
+
+            plotData.forEach(function(task, i) {
+                var canvas = document.getElementById('chart_' + i);
+                if (!canvas) return;
+                var ctx = canvas.getContext('2d');
+                if (datasetType === 'regression') {
+                    var allX = task.train.map(d => d[0]).concat(task.test.map(d => d[0]));
+                    var allY = task.train.map(d => d[1]).concat(task.test.map(d => d[1]));
+                    var minVal = Math.min.apply(null, allX.concat(allY));
+                    var maxVal = Math.max.apply(null, allX.concat(allY));
+                    var axisMin = Math.floor(minVal), axisMax = Math.ceil(maxVal);
+                    new Chart(ctx, {
+                        type: 'scatter',
+                        data: { datasets: [
+                            { label: 'Train', data: task.train.map(d => ({x: d[0], y: d[1]})), backgroundColor: 'rgba(54,162,235,0.4)', pointRadius: 3 },
+                            { label: 'Test',  data: task.test.map(d => ({x: d[0], y: d[1]})),  backgroundColor: 'rgba(255,99,132,0.7)',  pointRadius: 4 },
+                            { label: 'y = x', type: 'line', data: [{x: axisMin, y: axisMin}, {x: axisMax, y: axisMax}], borderColor: 'black', borderWidth: 1.5, borderDash: [6,4], pointRadius: 0, pointStyle: 'line', fill: false }
+                        ]},
+                        options: {
+                            plugins: { legend: { display: true, labels: { filter: item => item.text !== 'y = x' } } },
+                            scales: {
+                                x: { title: { display: true, text: 'Experimental' }, min: axisMin, max: axisMax, ticks: { stepSize: 1 } },
+                                y: { title: { display: true, text: 'Predicted'    }, min: axisMin, max: axisMax, ticks: { stepSize: 1 } }
+                            },
+                            onHover: function(event, elements) {
+                                if (elements.length > 0 && elements[0].datasetIndex < 2) {
+                                    ctx.canvas.style.cursor = 'pointer';
+                                    onPointHover(event, task, elements[0].datasetIndex, elements[0].index);
+                                } else {
+                                    ctx.canvas.style.cursor = 'default';
+                                    hideTooltip();
+                                }
+                            }
+                        }
+                    });
+                } else {
+                    new Chart(ctx, {
+                        type: 'line',
+                        data: { datasets: [
+                            { label: task.name + ' (AUC = ' + task.auc + ')', data: task.fpr.map((f, idx) => ({x: f, y: task.tpr[idx]})), borderColor: 'rgba(54,162,235,1)', backgroundColor: 'rgba(54,162,235,0.1)', fill: true, pointRadius: 0, tension: 0 },
+                            { label: 'Random', data: [{x:0,y:0},{x:1,y:1}], borderColor: 'rgba(150,150,150,1)', borderDash: [6,4], fill: false, pointRadius: 0 }
+                        ]},
+                        options: {
+                            scales: {
+                                x: { type: 'linear', title: { display: true, text: 'False Positive Rate' }, min: 0, max: 1 },
+                                y: { title: { display: true, text: 'True Positive Rate' }, min: 0, max: 1 }
+                            }
+                        }
+                    });
+                }
+            });
+        }
+    </script>
+
     <div id="trainResults">
     {% if trained %}
+        <div id="trainStats">
         <h3>Training complete!</h3>
 
         <h4>Test performance</h4>
@@ -168,118 +302,79 @@
         {% for i in range(num_tasks) %}
             <p>{{ task_names[i] }}: {{ task_scores[i] }} {{ metric }}</p>
         {% endfor %}
+        </div>
 
         {% if plot_data %}
             <hr>
-            <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-            {% for task in plot_data %}
-                <h4>
-                    {% if dataset_type == 'regression' %}
-                        {{ task.name }}: Predicted vs Experimental
-                    {% else %}
-                        {{ task.name }}: ROC Curve (AUC = {{ task.auc }})
-                    {% endif %}
-                </h4>
-                <canvas id="chart_{{ loop.index0 }}" style="max-width:500px; max-height:500px;"></canvas>
-            {% endfor %}
-
+            <div id="chartsContainer">
+                {% for task in plot_data %}
+                    <h4>
+                        {% if dataset_type == 'regression' %}
+                            {{ task.name }}: Predicted vs Experimental
+                        {% else %}
+                            {{ task.name }}: ROC Curve (AUC = {{ task.auc }})
+                        {% endif %}
+                    </h4>
+                    <canvas id="chart_{{ loop.index0 }}" style="max-width:500px; max-height:500px;"></canvas>
+                {% endfor %}
+            </div>
             <script>
-                var plotData = {{ plot_data | tojson }};
-                var datasetType = {{ dataset_type | tojson }};
-
-                plotData.forEach(function(task, i) {
-                    var ctx = document.getElementById('chart_' + i).getContext('2d');
-
-                    if (datasetType === 'regression') {
-                        var allX = task.train.map(d => d[0]).concat(task.test.map(d => d[0]));
-                        var allY = task.train.map(d => d[1]).concat(task.test.map(d => d[1]));
-                        var minVal = Math.min.apply(null, allX.concat(allY));
-                        var maxVal = Math.max.apply(null, allX.concat(allY));
-                        var axisMin = Math.floor(minVal);
-                        var axisMax = Math.ceil(maxVal);
-
-                        new Chart(ctx, {
-                            type: 'scatter',
-                            data: {
-                                datasets: [
-                                    {
-                                        label: 'Train',
-                                        data: task.train.map(d => ({x: d[0], y: d[1]})),
-                                        backgroundColor: 'rgba(54, 162, 235, 0.4)',
-                                        pointRadius: 3,
-                                    },
-                                    {
-                                        label: 'Test',
-                                        data: task.test.map(d => ({x: d[0], y: d[1]})),
-                                        backgroundColor: 'rgba(255, 99, 132, 0.7)',
-                                        pointRadius: 4,
-                                    },
-                                    {
-                                        label: 'y = x',
-                                        type: 'line',
-                                        data: [{x: axisMin, y: axisMin}, {x: axisMax, y: axisMax}],
-                                        borderColor: 'black',
-                                        borderWidth: 1.5,
-                                        borderDash: [6, 4],
-                                        pointRadius: 0,
-                                        pointStyle: 'line',
-                                        fill: false,
-                                    }
-                                ]
-                            },
-                            options: {
-                                plugins: { legend: { display: true, labels: { filter: item => item.text !== 'y = x' } } },
-                                scales: {
-                                    x: { title: { display: true, text: 'Experimental' }, min: axisMin, max: axisMax, ticks: { stepSize: 1 } },
-                                    y: { title: { display: true, text: 'Predicted' }, min: axisMin, max: axisMax, ticks: { stepSize: 1 } }
-                                }
-                            }
-                        });
-
-                    } else {
-                        new Chart(ctx, {
-                            type: 'line',
-                            data: {
-                                datasets: [
-                                    {
-                                        label: task.name + ' (AUC = ' + task.auc + ')',
-                                        data: task.fpr.map((f, idx) => ({x: f, y: task.tpr[idx]})),
-                                        borderColor: 'rgba(54, 162, 235, 1)',
-                                        backgroundColor: 'rgba(54, 162, 235, 0.1)',
-                                        fill: true,
-                                        pointRadius: 0,
-                                        tension: 0,
-                                    },
-                                    {
-                                        label: 'Random',
-                                        data: [{x: 0, y: 0}, {x: 1, y: 1}],
-                                        borderColor: 'rgba(150, 150, 150, 1)',
-                                        borderDash: [6, 4],
-                                        fill: false,
-                                        pointRadius: 0,
-                                    }
-                                ]
-                            },
-                            options: {
-                                scales: {
-                                    x: {
-                                        type: 'linear',
-                                        title: { display: true, text: 'False Positive Rate' },
-                                        min: 0, max: 1,
-                                    },
-                                    y: {
-                                        title: { display: true, text: 'True Positive Rate' },
-                                        min: 0, max: 1,
-                                    }
-                                }
-                            }
-                        });
-                    }
-                });
+                (function() {
+                    var plotData = {{ plot_data | tojson }};
+                    var datasetType = {{ dataset_type | tojson }};
+                    var ckptId = {{ ckpt_id | tojson }};
+                    initCharts(plotData, datasetType, ckptId);
+                    try {
+                        sessionStorage.setItem('cp_train', JSON.stringify({
+                            statsHtml: document.getElementById('trainStats').outerHTML,
+                            plotData: plotData,
+                            datasetType: datasetType,
+                            ckptId: ckptId
+                        }));
+                    } catch(e) {}
+                })();
             </script>
         {% endif %}
 
     {% endif %}
     </div>
+
+    <script>
+        // Restore previous training results when navigating back to this tab
+        {% if not trained %}
+        (function() {
+            var saved = sessionStorage.getItem('cp_train');
+            if (!saved) return;
+            var state;
+            try { state = JSON.parse(saved); } catch(e) { return; }
+            if (!state.plotData || !state.statsHtml) return;
+
+            var results = document.getElementById('trainResults');
+
+            // Re-insert the stats HTML
+            var tmp = document.createElement('div');
+            tmp.innerHTML = state.statsHtml;
+            results.appendChild(tmp.firstChild);
+
+            // Rebuild canvas elements
+            var hr = document.createElement('hr');
+            results.appendChild(hr);
+            state.plotData.forEach(function(task, i) {
+                var h4 = document.createElement('h4');
+                h4.textContent = state.datasetType === 'regression'
+                    ? task.name + ': Predicted vs Experimental'
+                    : task.name + ': ROC Curve (AUC = ' + task.auc + ')';
+                results.appendChild(h4);
+                var canvas = document.createElement('canvas');
+                canvas.id = 'chart_' + i;
+                canvas.style.maxWidth = '500px';
+                canvas.style.maxHeight = '500px';
+                results.appendChild(canvas);
+            });
+
+            initCharts(state.plotData, state.datasetType, state.ckptId);
+        })();
+        {% endif %}
+    </script>
 
 {% endblock %}
