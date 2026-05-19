@@ -663,17 +663,20 @@ def predict():
     device = None if (gpu is None or gpu == 'None') else torch.device(f'cuda:{gpu}')
     attribution_svgs = compute_attributions(model_paths, flat_smiles, device=device)
 
-    # If identifiers were supplied, rewrite the predictions CSV to include them
+    # Write predictions CSV with rounded values (3 d.p.)
     has_ids = identifiers is not None and any(i is not None for i in identifiers)
-    if has_ids:
-        preds_path = os.path.join(app.config['TEMP_FOLDER'], app.config['PREDICTIONS_FILENAME'])
-        with open(preds_path, 'w', newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow(['id', 'smiles'] + task_names)
-            for idx, (smi_row, pred) in enumerate(zip(smiles, preds)):
-                id_val = identifiers[idx] if identifiers[idx] is not None else ''
-                pred_vals = pred if pred is not None else ['Invalid SMILES'] * num_tasks
-                writer.writerow([id_val, smi_row[0]] + pred_vals)
+    preds_path = os.path.join(app.config['TEMP_FOLDER'], app.config['PREDICTIONS_FILENAME'])
+    with open(preds_path, 'w', newline='') as f:
+        writer = csv.writer(f)
+        header = (['id'] if has_ids else []) + ['smiles'] + task_names
+        writer.writerow(header)
+        for idx, (smi_row, pred) in enumerate(zip(smiles, preds)):
+            row = []
+            if has_ids:
+                row.append(identifiers[idx] if identifiers[idx] is not None else '')
+            row.append(smi_row[0])
+            row.extend([round(v, 3) if isinstance(v, float) else v for v in pred])
+            writer.writerow(row)
 
     return render_predict(predicted=True,
                           smiles=smiles,
