@@ -33,6 +33,11 @@ TRAINING = 0
 PROGRESS = mp.Value('d', 0.0)
 
 
+@app.context_processor
+def inject_version():
+    return {'web_version': app.config['WEB_VERSION']}
+
+
 def check_not_demo(func: Callable) -> Callable:
     """
     View wrapper, which will redirect request to site
