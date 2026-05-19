@@ -302,7 +302,7 @@
                     new Chart(ctx, {
                         type: 'line',
                         data: { datasets: [
-                            { label: task.name + ' (AUC = ' + task.auc + ')', data: task.fpr.map((f, idx) => ({x: f, y: task.tpr[idx]})), borderColor: 'rgba(54,162,235,1)', backgroundColor: 'rgba(54,162,235,0.1)', fill: true, pointRadius: 0, tension: 0 },
+                            { label: task.name, data: task.fpr.map((f, idx) => ({x: f, y: task.tpr[idx]})), borderColor: 'rgba(54,162,235,1)', backgroundColor: 'rgba(54,162,235,0.1)', fill: true, pointRadius: 0, tension: 0 },
                             { label: 'Random', data: [{x:0,y:0},{x:1,y:1}], borderColor: 'rgba(150,150,150,1)', borderDash: [6,4], fill: false, pointRadius: 0 }
                         ]},
                         options: {
@@ -331,7 +331,7 @@
                         {% if dataset_type == 'regression' %}
                             {{ task.name }}: Predicted vs Experimental
                         {% else %}
-                            {{ task.name }}: ROC Curve (AUC = {{ task.auc }})
+                            {{ task.name }}: ROC Curve
                         {% endif %}
                     </h4>
                     {% if dataset_type == 'regression' and task.train_stats %}
@@ -484,7 +484,7 @@
                 var h4 = document.createElement('h4');
                 h4.textContent = state.datasetType === 'regression'
                     ? task.name + ': Predicted vs Experimental'
-                    : task.name + ': ROC Curve (AUC = ' + task.auc + ')';
+                    : task.name + ': ROC Curve';
                 results.appendChild(h4);
                 var statsTable = makeStatsTable(task, state.datasetType);
                 if (statsTable) results.appendChild(statsTable);
