@@ -923,16 +923,19 @@ def validate_dataset_type(data: MoleculeDataset, dataset_type: str) -> None:
                          'Please switch to classification.')
 
 
-def validate_data(data_path: str) -> Set[str]:
+def validate_data(data_path: str, ignore_columns: List[str] = None) -> Set[str]:
     """
     Validates a data CSV file, returning a set of errors.
 
     :param data_path: Path to a data CSV file.
+    :param ignore_columns: Column names to exclude from target validation (e.g. identifier columns).
     :return: A set of error messages.
     """
     errors = set()
+    ignore_columns = set(ignore_columns or [])
 
     header = get_header(data_path)
+    target_indices = [i for i, col in enumerate(header) if i > 0 and col not in ignore_columns]
 
     with open(data_path) as f:
         reader = csv.reader(f)
@@ -941,7 +944,7 @@ def validate_data(data_path: str) -> Set[str]:
         smiles, targets = [], []
         for line in reader:
             smiles.append(line[0])
-            targets.append(line[1:])
+            targets.append([line[i] for i in target_indices if i < len(line)])
 
     # Validate header
     if len(header) == 0:
@@ -966,7 +969,7 @@ def validate_data(data_path: str) -> Set[str]:
 
     if len(num_tasks_set) == 1:
         num_tasks = num_tasks_set.pop()
-        if num_tasks != len(header) - 1:
+        if num_tasks != len(target_indices):
             errors.add('Number of tasks for each molecule doesn\'t match number of tasks in header.')
 
     unique_targets = set(np.unique([target for mol_targets in targets for target in mol_targets]))

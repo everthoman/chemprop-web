@@ -842,9 +842,10 @@ def upload_data(return_page: str):
 
     dataset = request.files['dataset']
 
+    upload_id_col = request.form.get('idColumn', '').strip() or None
     with NamedTemporaryFile() as temp_file:
         dataset.save(temp_file.name)
-        dataset_errors = validate_data(temp_file.name)
+        dataset_errors = validate_data(temp_file.name, ignore_columns=[upload_id_col] if upload_id_col else None)
 
         if len(dataset_errors) > 0:
             errors.extend(dataset_errors)
