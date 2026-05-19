@@ -1,13 +1,14 @@
 """Defines a number of routes/views for the flask app."""
 
 from functools import wraps
+import csv
 import io
 import os
 import sys
 import shutil
 from tempfile import TemporaryDirectory, NamedTemporaryFile
 import time
-from typing import Callable, List, Tuple
+from typing import Callable, List, Optional, Tuple
 import multiprocessing as mp
 import zipfile
 
@@ -508,6 +509,30 @@ def hyperopt_page():
     )
 
 
+def parse_smiles_text(text: str) -> Tuple[List[str], List[Optional[str]]]:
+    """Parse a block of text into (smiles, identifiers).
+
+    Each line may be bare SMILES or SMILES followed by an identifier separated
+    by a tab, comma, or whitespace.  Returns two parallel lists; entries with
+    no identifier get None.
+    """
+    smiles_list: List[str] = []
+    ids_list: List[Optional[str]] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if '\t' in line:
+            parts = line.split('\t', 1)
+        elif ',' in line:
+            parts = line.split(',', 1)
+        else:
+            parts = line.split(None, 1)
+        smiles_list.append(parts[0].strip())
+        ids_list.append(parts[1].strip() if len(parts) > 1 else None)
+    return smiles_list, ids_list
+
+
 def render_predict(**kwargs):
     """Renders the predict page with specified kwargs"""
     checkpoint_upload_warnings, checkpoint_upload_errors = get_upload_warnings_errors('checkpoint')
@@ -531,8 +556,11 @@ def predict():
     # Get arguments
     ckpt_id = request.form['checkpointName']
 
+    identifiers: Optional[List[Optional[str]]] = None
+
     if request.form['textSmiles'] != '':
-        smiles = request.form['textSmiles'].split()
+        raw_smiles, identifiers = parse_smiles_text(request.form['textSmiles'])
+        smiles = raw_smiles
     elif request.form['drawSmiles'] != '':
         smiles = [request.form['drawSmiles']]
     else:
@@ -603,6 +631,18 @@ def predict():
     device = None if (gpu is None or gpu == 'None') else torch.device(f'cuda:{gpu}')
     attribution_svgs = compute_attributions(model_paths, flat_smiles, device=device)
 
+    # If identifiers were supplied, rewrite the predictions CSV to include them
+    has_ids = identifiers is not None and any(i is not None for i in identifiers)
+    if has_ids:
+        preds_path = os.path.join(app.config['TEMP_FOLDER'], app.config['PREDICTIONS_FILENAME'])
+        with open(preds_path, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(['id', 'smiles'] + task_names)
+            for idx, (smi_row, pred) in enumerate(zip(smiles, preds)):
+                id_val = identifiers[idx] if identifiers[idx] is not None else ''
+                pred_vals = pred if pred is not None else ['Invalid SMILES'] * num_tasks
+                writer.writerow([id_val, smi_row[0]] + pred_vals)
+
     return render_predict(predicted=True,
                           smiles=smiles,
                           num_smiles=min(10, len(smiles)),
@@ -610,6 +650,7 @@ def predict():
                           task_names=task_names,
                           num_tasks=len(task_names),
                           preds=preds,
+                          identifiers=identifiers,
                           attribution_svgs=attribution_svgs,
                           warnings=["List contains invalid SMILES strings"] if None in preds else None,
                           errors=["No SMILES strings given"] if len(preds) == 0 else None)

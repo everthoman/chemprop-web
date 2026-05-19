@@ -42,8 +42,8 @@
 
         <!--SMILES input-->
         <div id="textInputForm">
-            <h5>SMILES (one per line)</h5>
-            <textarea id="textSmilesInput" name="textSmiles" cols="100" rows="10" placeholder="SMILES" required></textarea>
+            <h5>SMILES (one per line, optionally followed by an identifier separated by comma, tab, or space)</h5>
+            <textarea id="textSmilesInput" name="textSmiles" cols="100" rows="10" placeholder="e.g.  CC(=O)Oc1ccccc1C(=O)O&#10;      CC(=O)Oc1ccccc1C(=O)O, aspirin&#10;      CC(=O)Oc1ccccc1C(=O)O  aspirin" required></textarea>
         </div>
         <div id="fileInputForm" style="display:none">
             <h5>File containing SMILES (one per line)</h5>
@@ -149,7 +149,10 @@
                     </div>
                 {% endif %}
                 <div>
-                    <p><strong>SMILES:</strong> {{ smiles[i] }}</p>
+                    {% if identifiers and identifiers[i] %}
+                        <p><strong>ID:</strong> {{ identifiers[i] }}</p>
+                    {% endif %}
+                    <p><strong>SMILES:</strong> {{ smiles[i][0] }}</p>
                     {% for j in range(num_tasks) %}
                         <p>{{ task_names[j] }}: {{ preds[i][j] }}</p>
                     {% endfor %}
