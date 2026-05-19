@@ -60,6 +60,10 @@ Runs Bayesian hyperparameter optimization (TPE) to find the best model settings 
 4. Click **Start** — the first half of trials explore randomly, the second half are guided by results so far
 5. When complete, download the **config JSON** and upload it on the Train page to train a final model with your chosen epochs and ensemble size
 
+### Checkpoints
+
+Trained model checkpoints are listed on the Checkpoints page and can be downloaded as a zip file named after the checkpoint (e.g. `lipophilicity_model.zip`).
+
 ### Predict
 
 Select a trained checkpoint, enter SMILES (typed, drawn, or uploaded as CSV), and click **Predict**. Results can be downloaded as CSV.
