@@ -1,4 +1,4 @@
-# chemprop-web v1.9.0
+# chemprop-web v1.8.1
 
 A maintained fork of [Chemprop v1.7.1](https://github.com/chemprop/chemprop/tree/v1.7.1) that keeps the browser-based web interface working with modern Python and library versions.
 
@@ -69,7 +69,7 @@ Each prediction result includes an **atom contribution map**: a 2D structure ove
 
 ---
 
-## Changes in v1.9.0
+## Changes in v1.8.1
 
 ### Predict page
 - **Compound identifiers** — free-text SMILES input now accepts an optional identifier (comma, tab, or space separated). Identifiers are displayed in the results and written as an `id` column in the downloaded CSV.
