@@ -383,13 +383,42 @@ def train():
                         'test_stats': _reg_stats(test_pts),
                     })
 
+                # Write combined train/test CSV for download
+                tt_path = os.path.join(app.config['TEMP_FOLDER'], app.config['TRAIN_TEST_PREDS_FILENAME'])
+                with open(tt_path, 'w', newline='') as f:
+                    writer = csv.writer(f)
+                    header = ['smiles', 'split']
+                    for name in args.task_names:
+                        header += [name, f'pred_{name}']
+                    writer.writerow(header)
+                    for split_label, smi_list, tgts, preds_list in [
+                        ('train', train_smiles, train_targets, train_preds),
+                        ('test',  test_smiles,  test_targets,  test_preds),
+                    ]:
+                        for j in range(len(preds_list)):
+                            if preds_list[j] is None:
+                                continue
+                            row = [smi_list[j], split_label]
+                            for i in range(len(args.task_names)):
+                                t_val = tgts[j][i]
+                                p_val = preds_list[j][i]
+                                row += [
+                                    round(t_val, 3) if t_val is not None else '',
+                                    round(p_val, 3) if p_val is not None else '',
+                                ]
+                            writer.writerow(row)
+
             elif dataset_type == 'classification':
                 from sklearn.metrics import (roc_curve, auc as sklearn_auc,
                                              accuracy_score, precision_score,
                                              recall_score, f1_score,
                                              matthews_corrcoef, confusion_matrix)
+                train_preds = make_predictions(args=pred_args, smiles=to_smiles_list(train_split), return_uncertainty=False)
                 test_preds = make_predictions(args=pred_args, smiles=to_smiles_list(test_split), return_uncertainty=False)
+                train_targets = train_split.targets()
                 test_targets = test_split.targets()
+                train_smiles = flat_smiles(train_split)
+                test_smiles = flat_smiles(test_split)
 
                 plot_data = []
                 for i, task_name in enumerate(args.task_names):
@@ -424,13 +453,41 @@ def train():
                             'auc': round(roc_auc, 3),
                             'test_stats': test_stats,
                         })
+
+                # Write combined train/test CSV for download
+                tt_path = os.path.join(app.config['TEMP_FOLDER'], app.config['TRAIN_TEST_PREDS_FILENAME'])
+                with open(tt_path, 'w', newline='') as f:
+                    writer = csv.writer(f)
+                    header = ['smiles', 'split']
+                    for name in args.task_names:
+                        header += [name, f'pred_prob_{name}']
+                    writer.writerow(header)
+                    for split_label, smi_list, tgts, preds_list in [
+                        ('train', train_smiles, train_targets, train_preds),
+                        ('test',  test_smiles,  test_targets,  test_preds),
+                    ]:
+                        for j in range(len(preds_list)):
+                            if preds_list[j] is None:
+                                continue
+                            row = [smi_list[j], split_label]
+                            for i in range(len(args.task_names)):
+                                t_val = tgts[j][i]
+                                p_val = preds_list[j][i]
+                                row += [
+                                    int(t_val) if t_val is not None else '',
+                                    round(p_val, 3) if p_val is not None else '',
+                                ]
+                            writer.writerow(row)
+
         except Exception as e:
             warnings.append(f'Could not generate visualization: {str(e)}')
 
+    tt_path = os.path.join(app.config['TEMP_FOLDER'], app.config['TRAIN_TEST_PREDS_FILENAME'])
     return render_train(trained=True,
                         dataset_type=dataset_type,
                         plot_data=plot_data,
                         ckpt_id=ckpt_id,
+                        train_test_preds_available=os.path.exists(tt_path),
                         warnings=warnings,
                         errors=errors)
 
@@ -727,6 +784,14 @@ def get_attribution():
 def download_predictions():
     """Downloads predictions as a .csv file."""
     return send_from_directory(app.config['TEMP_FOLDER'], app.config['PREDICTIONS_FILENAME'], as_attachment=True, cache_timeout=-1)
+
+
+@app.route('/download_train_test_predictions')
+@check_not_demo
+def download_train_test_predictions():
+    """Downloads the combined train/test predictions CSV."""
+    return send_from_directory(app.config['TEMP_FOLDER'], app.config['TRAIN_TEST_PREDS_FILENAME'],
+                               as_attachment=True, download_name='train_test_predictions.csv', cache_timeout=-1)
 
 
 @app.route('/download_hyperopt_config')
