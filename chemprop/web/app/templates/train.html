@@ -303,9 +303,10 @@
                         type: 'line',
                         data: { datasets: [
                             { label: task.name, data: task.fpr.map((f, idx) => ({x: f, y: task.tpr[idx]})), borderColor: 'rgba(54,162,235,1)', backgroundColor: 'rgba(54,162,235,0.1)', fill: true, pointRadius: 0, tension: 0 },
-                            { label: 'Random', data: [{x:0,y:0},{x:1,y:1}], borderColor: 'rgba(150,150,150,1)', borderDash: [6,4], fill: false, pointRadius: 0 }
+                            { label: 'Random', data: [{x:0,y:0},{x:1,y:1}], borderColor: 'rgba(150,150,150,1)', borderDash: [6,4], fill: false, pointRadius: 0, pointStyle: 'line' }
                         ]},
                         options: {
+                            plugins: { legend: { labels: { usePointStyle: true } } },
                             scales: {
                                 x: { type: 'linear', title: { display: true, text: 'False Positive Rate' }, min: 0, max: 1 },
                                 y: { title: { display: true, text: 'True Positive Rate' }, min: 0, max: 1 }
