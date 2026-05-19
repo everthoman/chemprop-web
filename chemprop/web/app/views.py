@@ -409,6 +409,8 @@ def train():
                             'mcc': round(float(matthews_corrcoef(t, p_bin)), 3),
                             'tn': int(tn), 'fp': int(fp),
                             'fn': int(fn), 'tp': int(tp),
+                            'n_pos': int(fn + tp),
+                            'n_neg': int(tn + fp),
                         }
                         plot_data.append({
                             'name': task_name,

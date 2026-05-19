@@ -348,6 +348,7 @@
                         <table class="table table-sm table-bordered" style="max-width:280px; margin-bottom:0">
                             <thead><tr><th>Metric</th><th>Test (n={{ task.test_stats.n }})</th></tr></thead>
                             <tbody>
+                                <tr><td>Class balance</td><td>{{ task.test_stats.n_pos }} pos / {{ task.test_stats.n_neg }} neg ({{ (task.test_stats.n_pos / task.test_stats.n * 100) | round(1) }}% / {{ (task.test_stats.n_neg / task.test_stats.n * 100) | round(1) }}%)</td></tr>
                                 <tr><td>AUC</td><td>{{ task.test_stats.auc }}</td></tr>
                                 <tr><td>Accuracy</td><td>{{ task.test_stats.accuracy }}</td></tr>
                                 <tr><td>Precision</td><td>{{ task.test_stats.precision }}</td></tr>
@@ -428,6 +429,7 @@
                 table.innerHTML =
                     '<thead><tr><th>Metric</th><th>Test (n=' + xs.n + ')</th></tr></thead>' +
                     '<tbody>' +
+                    '<tr><td>Class balance</td><td>' + xs.n_pos + ' pos / ' + xs.n_neg + ' neg (' + Math.round(xs.n_pos/xs.n*1000)/10 + '% / ' + Math.round(xs.n_neg/xs.n*1000)/10 + '%)</td></tr>' +
                     '<tr><td>AUC</td><td>' + xs.auc + '</td></tr>' +
                     '<tr><td>Accuracy</td><td>' + xs.accuracy + '</td></tr>' +
                     '<tr><td>Precision</td><td>' + xs.precision + '</td></tr>' +
