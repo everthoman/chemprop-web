@@ -315,6 +315,19 @@
                             <tr><td>MAE</td><td>{{ task.train_stats.mae }}</td><td>{{ task.test_stats.mae }}</td></tr>
                         </tbody>
                     </table>
+                    {% elif dataset_type == 'classification' and task.test_stats %}
+                    <table class="table table-sm table-bordered" style="max-width:280px; margin-bottom:8px">
+                        <thead><tr><th>Metric</th><th>Test (n={{ task.test_stats.n }})</th></tr></thead>
+                        <tbody>
+                            <tr><td>AUC</td><td>{{ task.test_stats.auc }}</td></tr>
+                            <tr><td>Accuracy</td><td>{{ task.test_stats.accuracy }}</td></tr>
+                            <tr><td>Precision</td><td>{{ task.test_stats.precision }}</td></tr>
+                            <tr><td>Recall</td><td>{{ task.test_stats.recall }}</td></tr>
+                            <tr><td>Specificity</td><td>{{ task.test_stats.specificity }}</td></tr>
+                            <tr><td>F1</td><td>{{ task.test_stats.f1 }}</td></tr>
+                            <tr><td>MCC</td><td>{{ task.test_stats.mcc }}</td></tr>
+                        </tbody>
+                    </table>
                     {% endif %}
                     <canvas id="chart_{{ loop.index0 }}" style="max-width:500px; max-height:500px;"></canvas>
                 {% endfor %}
@@ -341,20 +354,39 @@
     </div>
 
     <script>
-        function makeStatsTable(task) {
-            if (!task.train_stats || !task.test_stats) return null;
-            var ts = task.train_stats, xs = task.test_stats;
+        function makeStatsTable(task, datasetType) {
             var table = document.createElement('table');
             table.className = 'table table-sm table-bordered';
-            table.style.maxWidth = '380px';
             table.style.marginBottom = '8px';
-            table.innerHTML =
-                '<thead><tr><th>Metric</th><th>Train (n=' + ts.n + ')</th><th>Test (n=' + xs.n + ')</th></tr></thead>' +
-                '<tbody>' +
-                '<tr><td>R² / Q²</td><td>' + ts.r2 + '</td><td>' + xs.r2 + '</td></tr>' +
-                '<tr><td>RMSE</td><td>' + ts.rmse + '</td><td>' + xs.rmse + '</td></tr>' +
-                '<tr><td>MAE</td><td>' + ts.mae + '</td><td>' + xs.mae + '</td></tr>' +
-                '</tbody>';
+            if (datasetType === 'regression') {
+                if (!task.train_stats || !task.test_stats) return null;
+                var ts = task.train_stats, xs = task.test_stats;
+                table.style.maxWidth = '380px';
+                table.innerHTML =
+                    '<thead><tr><th>Metric</th><th>Train (n=' + ts.n + ')</th><th>Test (n=' + xs.n + ')</th></tr></thead>' +
+                    '<tbody>' +
+                    '<tr><td>R² / Q²</td><td>' + ts.r2 + '</td><td>' + xs.r2 + '</td></tr>' +
+                    '<tr><td>RMSE</td><td>' + ts.rmse + '</td><td>' + xs.rmse + '</td></tr>' +
+                    '<tr><td>MAE</td><td>' + ts.mae + '</td><td>' + xs.mae + '</td></tr>' +
+                    '</tbody>';
+            } else if (datasetType === 'classification') {
+                if (!task.test_stats) return null;
+                var xs = task.test_stats;
+                table.style.maxWidth = '280px';
+                table.innerHTML =
+                    '<thead><tr><th>Metric</th><th>Test (n=' + xs.n + ')</th></tr></thead>' +
+                    '<tbody>' +
+                    '<tr><td>AUC</td><td>' + xs.auc + '</td></tr>' +
+                    '<tr><td>Accuracy</td><td>' + xs.accuracy + '</td></tr>' +
+                    '<tr><td>Precision</td><td>' + xs.precision + '</td></tr>' +
+                    '<tr><td>Recall</td><td>' + xs.recall + '</td></tr>' +
+                    '<tr><td>Specificity</td><td>' + xs.specificity + '</td></tr>' +
+                    '<tr><td>F1</td><td>' + xs.f1 + '</td></tr>' +
+                    '<tr><td>MCC</td><td>' + xs.mcc + '</td></tr>' +
+                    '</tbody>';
+            } else {
+                return null;
+            }
             return table;
         }
 
@@ -383,10 +415,8 @@
                     ? task.name + ': Predicted vs Experimental'
                     : task.name + ': ROC Curve (AUC = ' + task.auc + ')';
                 results.appendChild(h4);
-                if (state.datasetType === 'regression') {
-                    var statsTable = makeStatsTable(task);
-                    if (statsTable) results.appendChild(statsTable);
-                }
+                var statsTable = makeStatsTable(task, state.datasetType);
+                if (statsTable) results.appendChild(statsTable);
                 var canvas = document.createElement('canvas');
                 canvas.id = 'chart_' + i;
                 canvas.style.maxWidth = '500px';

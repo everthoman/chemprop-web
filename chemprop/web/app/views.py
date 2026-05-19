@@ -379,7 +379,10 @@ def train():
                     })
 
             elif dataset_type == 'classification':
-                from sklearn.metrics import roc_curve, auc as sklearn_auc
+                from sklearn.metrics import (roc_curve, auc as sklearn_auc,
+                                             accuracy_score, precision_score,
+                                             recall_score, f1_score,
+                                             matthews_corrcoef, confusion_matrix)
                 test_preds = make_predictions(args=pred_args, smiles=to_smiles_list(test_split), return_uncertainty=False)
                 test_targets = test_split.targets()
 
@@ -392,11 +395,25 @@ def train():
                     if len(set(t)) == 2:
                         fpr, tpr, _ = roc_curve(t, p)
                         roc_auc = sklearn_auc(fpr, tpr)
+                        p_bin = [1 if prob >= 0.5 else 0 for prob in p]
+                        tn, fp, fn, tp = confusion_matrix(t, p_bin).ravel()
+                        specificity = tn / (tn + fp) if (tn + fp) > 0 else 0.0
+                        test_stats = {
+                            'n': len(t),
+                            'auc': round(roc_auc, 3),
+                            'accuracy': round(float(accuracy_score(t, p_bin)), 3),
+                            'precision': round(float(precision_score(t, p_bin, zero_division=0)), 3),
+                            'recall': round(float(recall_score(t, p_bin, zero_division=0)), 3),
+                            'specificity': round(float(specificity), 3),
+                            'f1': round(float(f1_score(t, p_bin, zero_division=0)), 3),
+                            'mcc': round(float(matthews_corrcoef(t, p_bin)), 3),
+                        }
                         plot_data.append({
                             'name': task_name,
                             'fpr': fpr.tolist(),
                             'tpr': tpr.tolist(),
                             'auc': round(roc_auc, 3),
+                            'test_stats': test_stats,
                         })
         except Exception as e:
             warnings.append(f'Could not generate visualization: {str(e)}')
