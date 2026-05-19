@@ -1,4 +1,4 @@
-# chemprop-web v1.8.0
+# chemprop-web v1.9.0
 
 A maintained fork of [Chemprop v1.7.1](https://github.com/chemprop/chemprop/tree/v1.7.1) that keeps the browser-based web interface working with modern Python and library versions.
 
@@ -38,7 +38,14 @@ Upload CSV files with a header row. The first column is assumed to be SMILES unl
 
 ### Train
 
-Select a dataset, choose regression or classification, set epochs and ensemble size, and click **Train**. Optionally upload a hyperparameter config JSON (from the Hyperopt page) to train with optimized settings. A scatter plot (regression) or ROC curve (classification) is shown after training.
+Select a dataset, choose regression or classification, set epochs and ensemble size, and click **Train**. Optionally upload a hyperparameter config JSON (from the Hyperopt page) to train with optimized settings.
+
+A progress bar with an estimated time to completion is shown during training. After training:
+
+- **Regression** — scatter plot (predicted vs experimental) with a per-task statistics table showing R² (train) / Q² (test), RMSE, and MAE for both splits.
+- **Classification** — ROC curve with a per-task statistics table (class balance, AUC, Accuracy, Precision, Recall, Specificity, F1, MCC) and a colour-coded confusion matrix (TN/FP/FN/TP), all computed on the test set at a 0.5 threshold.
+
+Results persist when switching tabs and are restored from session storage when you navigate back.
 
 ### Hyperopt
 
@@ -56,7 +63,22 @@ Runs Bayesian hyperparameter optimization (TPE) to find the best model settings 
 
 Select a trained checkpoint, enter SMILES (typed, drawn, or uploaded as CSV), and click **Predict**. Results can be downloaded as CSV.
 
+SMILES entered as free text can optionally include a compound identifier separated by a comma, tab, or space (e.g. `CC(=O)Oc1ccccc1C(=O)O, aspirin`). Identifiers are shown alongside predictions in the UI and included as an `id` column in the downloaded CSV. Predicted values are rounded to 3 decimal places in both the UI and the CSV.
+
 Each prediction result includes an **atom contribution map**: a 2D structure overlaid with a Gaussian heatmap showing which atoms increase (green) or decrease (red/pink) the predicted value, computed via gradient × activation (GradCAM-style) and averaged across ensemble members.
+
+---
+
+## Changes in v1.9.0
+
+### Predict page
+- **Compound identifiers** — free-text SMILES input now accepts an optional identifier (comma, tab, or space separated). Identifiers are displayed in the results and written as an `id` column in the downloaded CSV.
+- **Rounded predictions** — predicted values are rounded to 3 decimal places in both the UI and the downloaded CSV.
+
+### Train page
+- **ETA during training** — an estimated time to completion is shown below the progress bar, updating every 500 ms based on observed epoch rate.
+- **Regression statistics table** — after training, a per-task table shows R² (train) / Q² (test), RMSE, and MAE for both the train and test splits.
+- **Classification statistics table** — after training, a per-task table shows class balance, AUC, Accuracy, Precision, Recall, Specificity, F1, and MCC (all at 0.5 threshold) alongside a colour-coded confusion matrix.
 
 ---
 
