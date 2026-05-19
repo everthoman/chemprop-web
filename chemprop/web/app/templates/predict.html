@@ -154,7 +154,7 @@
                     {% endif %}
                     <p><strong>SMILES:</strong> {{ smiles[i][0] }}</p>
                     {% for j in range(num_tasks) %}
-                        <p>{{ task_names[j] }}: {{ preds[i][j] }}</p>
+                        <p><strong>{{ task_names[j] }}:</strong> {{ preds[i][j] | round(3) if preds[i][j] is number else preds[i][j] }}</p>
                     {% endfor %}
                 </div>
             </div>
