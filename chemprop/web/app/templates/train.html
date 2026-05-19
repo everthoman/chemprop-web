@@ -315,6 +315,16 @@
                             {{ task.name }}: ROC Curve (AUC = {{ task.auc }})
                         {% endif %}
                     </h4>
+                    {% if dataset_type == 'regression' and task.train_stats %}
+                    <table class="table table-sm table-bordered" style="max-width:380px; margin-bottom:8px">
+                        <thead><tr><th>Metric</th><th>Train (n={{ task.train_stats.n }})</th><th>Test (n={{ task.test_stats.n }})</th></tr></thead>
+                        <tbody>
+                            <tr><td>R² / Q²</td><td>{{ task.train_stats.r2 }}</td><td>{{ task.test_stats.r2 }}</td></tr>
+                            <tr><td>RMSE</td><td>{{ task.train_stats.rmse }}</td><td>{{ task.test_stats.rmse }}</td></tr>
+                            <tr><td>MAE</td><td>{{ task.train_stats.mae }}</td><td>{{ task.test_stats.mae }}</td></tr>
+                        </tbody>
+                    </table>
+                    {% endif %}
                     <canvas id="chart_{{ loop.index0 }}" style="max-width:500px; max-height:500px;"></canvas>
                 {% endfor %}
             </div>
@@ -340,6 +350,23 @@
     </div>
 
     <script>
+        function makeStatsTable(task) {
+            if (!task.train_stats || !task.test_stats) return null;
+            var ts = task.train_stats, xs = task.test_stats;
+            var table = document.createElement('table');
+            table.className = 'table table-sm table-bordered';
+            table.style.maxWidth = '380px';
+            table.style.marginBottom = '8px';
+            table.innerHTML =
+                '<thead><tr><th>Metric</th><th>Train (n=' + ts.n + ')</th><th>Test (n=' + xs.n + ')</th></tr></thead>' +
+                '<tbody>' +
+                '<tr><td>R² / Q²</td><td>' + ts.r2 + '</td><td>' + xs.r2 + '</td></tr>' +
+                '<tr><td>RMSE</td><td>' + ts.rmse + '</td><td>' + xs.rmse + '</td></tr>' +
+                '<tr><td>MAE</td><td>' + ts.mae + '</td><td>' + xs.mae + '</td></tr>' +
+                '</tbody>';
+            return table;
+        }
+
         // Restore previous training results when navigating back to this tab
         {% if not trained %}
         (function() {
@@ -365,6 +392,10 @@
                     ? task.name + ': Predicted vs Experimental'
                     : task.name + ': ROC Curve (AUC = ' + task.auc + ')';
                 results.appendChild(h4);
+                if (state.datasetType === 'regression') {
+                    var statsTable = makeStatsTable(task);
+                    if (statsTable) results.appendChild(statsTable);
+                }
                 var canvas = document.createElement('canvas');
                 canvas.id = 'chart_' + i;
                 canvas.style.maxWidth = '500px';

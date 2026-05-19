@@ -350,6 +350,18 @@ def train():
                 train_smiles = flat_smiles(train_split)
                 test_smiles = flat_smiles(test_split)
 
+                def _reg_stats(pts):
+                    if not pts:
+                        return None
+                    y = np.array([p[0] for p in pts], dtype=float)
+                    p = np.array([p[1] for p in pts], dtype=float)
+                    ss_res = np.sum((y - p) ** 2)
+                    ss_tot = np.sum((y - y.mean()) ** 2)
+                    r2 = float(1 - ss_res / ss_tot) if ss_tot > 0 else 0.0
+                    rmse = float(np.sqrt(np.mean((y - p) ** 2)))
+                    mae = float(np.mean(np.abs(y - p)))
+                    return {'r2': round(r2, 3), 'rmse': round(rmse, 3), 'mae': round(mae, 3), 'n': len(pts)}
+
                 plot_data = []
                 for i, task_name in enumerate(args.task_names):
                     train_pts = [[train_targets[j][i], train_preds[j][i], train_smiles[j]]
@@ -358,7 +370,13 @@ def train():
                     test_pts = [[test_targets[j][i], test_preds[j][i], test_smiles[j]]
                                 for j in range(len(test_preds))
                                 if test_preds[j] is not None and test_targets[j][i] is not None]
-                    plot_data.append({'name': task_name, 'train': train_pts, 'test': test_pts})
+                    plot_data.append({
+                        'name': task_name,
+                        'train': train_pts,
+                        'test': test_pts,
+                        'train_stats': _reg_stats(train_pts),
+                        'test_stats': _reg_stats(test_pts),
+                    })
 
             elif dataset_type == 'classification':
                 from sklearn.metrics import roc_curve, auc as sklearn_auc
