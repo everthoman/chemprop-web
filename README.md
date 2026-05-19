@@ -34,7 +34,7 @@ The web app supports the full training and prediction workflow through a browser
 
 ### Data
 
-Upload CSV files with a header row. The first column is assumed to be SMILES unless you specify otherwise on the command line. All other columns are treated as targets. Use `--ignore_columns` for identifiers.
+Upload CSV files with a header row. The first column must be SMILES; all other columns are treated as targets. If your file contains a non-numeric identifier column (e.g. `chembl_id`), enter its name in the optional **Identifier column** field on upload — it will be excluded from target validation. The same field on the Train page excludes the column from model targets and passes it through to the downloaded train/test predictions CSV.
 
 ### Train
 
