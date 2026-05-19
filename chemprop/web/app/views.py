@@ -276,7 +276,7 @@ def train():
 
         # Run training
         logger = create_logger(name=TRAIN_LOGGER_NAME, save_dir=args.save_dir, quiet=args.quiet)
-        task_scores = run_training(args, data, logger)[args.metrics[0]]
+        run_training(args, data, logger)
 
         if use_progress_bar:
             PROGRESS.value = 100
@@ -402,11 +402,6 @@ def train():
             warnings.append(f'Could not generate visualization: {str(e)}')
 
     return render_train(trained=True,
-                        metric=args.metric,
-                        num_tasks=len(args.task_names),
-                        task_names=args.task_names,
-                        task_scores=format_float_list(task_scores),
-                        mean_score=format_float(np.mean(task_scores)),
                         dataset_type=dataset_type,
                         plot_data=plot_data,
                         ckpt_id=ckpt_id,
