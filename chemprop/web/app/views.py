@@ -407,6 +407,8 @@ def train():
                             'specificity': round(float(specificity), 3),
                             'f1': round(float(f1_score(t, p_bin, zero_division=0)), 3),
                             'mcc': round(float(matthews_corrcoef(t, p_bin)), 3),
+                            'tn': int(tn), 'fp': int(fp),
+                            'fn': int(fn), 'tp': int(tp),
                         }
                         plot_data.append({
                             'name': task_name,

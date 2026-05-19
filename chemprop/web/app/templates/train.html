@@ -316,18 +316,38 @@
                         </tbody>
                     </table>
                     {% elif dataset_type == 'classification' and task.test_stats %}
-                    <table class="table table-sm table-bordered" style="max-width:280px; margin-bottom:8px">
-                        <thead><tr><th>Metric</th><th>Test (n={{ task.test_stats.n }})</th></tr></thead>
-                        <tbody>
-                            <tr><td>AUC</td><td>{{ task.test_stats.auc }}</td></tr>
-                            <tr><td>Accuracy</td><td>{{ task.test_stats.accuracy }}</td></tr>
-                            <tr><td>Precision</td><td>{{ task.test_stats.precision }}</td></tr>
-                            <tr><td>Recall</td><td>{{ task.test_stats.recall }}</td></tr>
-                            <tr><td>Specificity</td><td>{{ task.test_stats.specificity }}</td></tr>
-                            <tr><td>F1</td><td>{{ task.test_stats.f1 }}</td></tr>
-                            <tr><td>MCC</td><td>{{ task.test_stats.mcc }}</td></tr>
-                        </tbody>
-                    </table>
+                    <div style="display:flex; gap:16px; flex-wrap:wrap; align-items:flex-start; margin-bottom:8px">
+                        <table class="table table-sm table-bordered" style="max-width:280px; margin-bottom:0">
+                            <thead><tr><th>Metric</th><th>Test (n={{ task.test_stats.n }})</th></tr></thead>
+                            <tbody>
+                                <tr><td>AUC</td><td>{{ task.test_stats.auc }}</td></tr>
+                                <tr><td>Accuracy</td><td>{{ task.test_stats.accuracy }}</td></tr>
+                                <tr><td>Precision</td><td>{{ task.test_stats.precision }}</td></tr>
+                                <tr><td>Recall</td><td>{{ task.test_stats.recall }}</td></tr>
+                                <tr><td>Specificity</td><td>{{ task.test_stats.specificity }}</td></tr>
+                                <tr><td>F1</td><td>{{ task.test_stats.f1 }}</td></tr>
+                                <tr><td>MCC</td><td>{{ task.test_stats.mcc }}</td></tr>
+                            </tbody>
+                        </table>
+                        <table class="table table-sm table-bordered" style="max-width:280px; margin-bottom:0; text-align:center">
+                            <thead>
+                                <tr><th></th><th colspan="2">Predicted</th></tr>
+                                <tr><th></th><th>Negative</th><th>Positive</th></tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <th style="vertical-align:middle; text-align:right">Actual Negative</th>
+                                    <td style="background:#d4edda">TN: {{ task.test_stats.tn }}</td>
+                                    <td style="background:#f8d7da">FP: {{ task.test_stats.fp }}</td>
+                                </tr>
+                                <tr>
+                                    <th style="vertical-align:middle; text-align:right">Actual Positive</th>
+                                    <td style="background:#f8d7da">FN: {{ task.test_stats.fn }}</td>
+                                    <td style="background:#d4edda">TP: {{ task.test_stats.tp }}</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
                     {% endif %}
                     <canvas id="chart_{{ loop.index0 }}" style="max-width:500px; max-height:500px;"></canvas>
                 {% endfor %}
@@ -372,7 +392,11 @@
             } else if (datasetType === 'classification') {
                 if (!task.test_stats) return null;
                 var xs = task.test_stats;
+                // Return a flex wrapper with stats table + confusion matrix side by side
+                var wrapper = document.createElement('div');
+                wrapper.style.cssText = 'display:flex; gap:16px; flex-wrap:wrap; align-items:flex-start; margin-bottom:8px';
                 table.style.maxWidth = '280px';
+                table.style.marginBottom = '0';
                 table.innerHTML =
                     '<thead><tr><th>Metric</th><th>Test (n=' + xs.n + ')</th></tr></thead>' +
                     '<tbody>' +
@@ -384,6 +408,23 @@
                     '<tr><td>F1</td><td>' + xs.f1 + '</td></tr>' +
                     '<tr><td>MCC</td><td>' + xs.mcc + '</td></tr>' +
                     '</tbody>';
+                var cm = document.createElement('table');
+                cm.className = 'table table-sm table-bordered';
+                cm.style.cssText = 'max-width:280px; margin-bottom:0; text-align:center';
+                cm.innerHTML =
+                    '<thead><tr><th></th><th colspan="2">Predicted</th></tr>' +
+                    '<tr><th></th><th>Negative</th><th>Positive</th></tr></thead>' +
+                    '<tbody>' +
+                    '<tr><th style="vertical-align:middle;text-align:right">Actual Negative</th>' +
+                    '<td style="background:#d4edda">TN: ' + xs.tn + '</td>' +
+                    '<td style="background:#f8d7da">FP: ' + xs.fp + '</td></tr>' +
+                    '<tr><th style="vertical-align:middle;text-align:right">Actual Positive</th>' +
+                    '<td style="background:#f8d7da">FN: ' + xs.fn + '</td>' +
+                    '<td style="background:#d4edda">TP: ' + xs.tp + '</td></tr>' +
+                    '</tbody>';
+                wrapper.appendChild(table);
+                wrapper.appendChild(cm);
+                return wrapper;
             } else {
                 return null;
             }
