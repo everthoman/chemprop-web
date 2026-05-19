@@ -875,7 +875,10 @@ def download_data(dataset: int):
 
     :param dataset: The id of the dataset to download.
     """
-    return send_from_directory(app.config['DATA_FOLDER'], f'{dataset}.csv', as_attachment=True, cache_timeout=-1)
+    row = db.query_db('SELECT dataset_name FROM dataset WHERE id = ?', (dataset,), one=True)
+    download_name = f'{row["dataset_name"]}.csv' if row else f'{dataset}.csv'
+    return send_from_directory(app.config['DATA_FOLDER'], f'{dataset}.csv', as_attachment=True,
+                               download_name=download_name, cache_timeout=-1)
 
 
 @app.route('/data/delete/<int:dataset>')
