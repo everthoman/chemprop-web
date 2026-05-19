@@ -204,6 +204,11 @@ def train():
     gpu = request.form.get('gpu')
     data_path = os.path.join(app.config['DATA_FOLDER'], f'{data_name}.csv')
     dataset_type = request.form.get('datasetType', 'regression')
+    id_col = request.form.get('idColumn', '').strip() or None
+    if id_col and id_col not in get_header(data_path):
+        warnings.append(f'Identifier column "{id_col}" not found in data — it will be ignored.')
+        id_col = None
+    ignore_cols = [id_col] if id_col else []
     use_progress_bar = request.form.get('useProgressBar', 'True') == 'True'
 
     # Handle optional hyperopt config (content sent as hidden field via FileReader)
@@ -226,10 +231,10 @@ def train():
     args = TrainArgs().parse_args(train_arg_list)
 
     # Get task names
-    args.task_names = get_task_names(path=data_path, smiles_columns=args.smiles_columns)
+    args.task_names = get_task_names(path=data_path, smiles_columns=args.smiles_columns, ignore_columns=ignore_cols or None)
 
     # Check if regression/classification selection matches data
-    data = get_data(path=data_path, smiles_columns=args.smiles_columns)
+    data = get_data(path=data_path, smiles_columns=args.smiles_columns, ignore_columns=ignore_cols)
     # Set the number of molecules through the length of the smiles_columns for now, we need to add an option to the site later
 
     targets = data.targets()
@@ -312,7 +317,8 @@ def train():
 
             # Reload data fresh from CSV — run_training scales targets in-place,
             # so reusing `data` here would give scaled targets against unscaled predictions.
-            fresh_data = get_data(path=data_path, smiles_columns=args.smiles_columns)
+            fresh_data = get_data(path=data_path, smiles_columns=args.smiles_columns,
+                                  ignore_columns=ignore_cols, store_row=bool(id_col))
             train_split, _, test_split = split_data(
                 data=fresh_data,
                 split_type=args.split_type,
@@ -346,6 +352,9 @@ def train():
                 if smiles and isinstance(smiles[0], str):
                     return smiles
                 return [s[0] for s in smiles]
+
+            train_ids = [d.row.get(id_col, '') for d in train_split] if id_col else None
+            test_ids  = [d.row.get(id_col, '') for d in test_split]  if id_col else None
 
             if dataset_type == 'regression':
                 train_preds = make_predictions(args=pred_args, smiles=to_smiles_list(train_split), return_uncertainty=False)
@@ -387,18 +396,18 @@ def train():
                 tt_path = os.path.join(app.config['TEMP_FOLDER'], app.config['TRAIN_TEST_PREDS_FILENAME'])
                 with open(tt_path, 'w', newline='') as f:
                     writer = csv.writer(f)
-                    header = ['smiles', 'split']
+                    header = (['id'] if id_col else []) + ['smiles', 'split']
                     for name in args.task_names:
                         header += [name, f'pred_{name}']
                     writer.writerow(header)
-                    for split_label, smi_list, tgts, preds_list in [
-                        ('train', train_smiles, train_targets, train_preds),
-                        ('test',  test_smiles,  test_targets,  test_preds),
+                    for split_label, smi_list, tgts, preds_list, ids in [
+                        ('train', train_smiles, train_targets, train_preds, train_ids),
+                        ('test',  test_smiles,  test_targets,  test_preds,  test_ids),
                     ]:
                         for j in range(len(preds_list)):
                             if preds_list[j] is None:
                                 continue
-                            row = [smi_list[j], split_label]
+                            row = ([ids[j]] if id_col else []) + [smi_list[j], split_label]
                             for i in range(len(args.task_names)):
                                 t_val = tgts[j][i]
                                 p_val = preds_list[j][i]
@@ -458,18 +467,18 @@ def train():
                 tt_path = os.path.join(app.config['TEMP_FOLDER'], app.config['TRAIN_TEST_PREDS_FILENAME'])
                 with open(tt_path, 'w', newline='') as f:
                     writer = csv.writer(f)
-                    header = ['smiles', 'split']
+                    header = (['id'] if id_col else []) + ['smiles', 'split']
                     for name in args.task_names:
                         header += [name, f'pred_prob_{name}']
                     writer.writerow(header)
-                    for split_label, smi_list, tgts, preds_list in [
-                        ('train', train_smiles, train_targets, train_preds),
-                        ('test',  test_smiles,  test_targets,  test_preds),
+                    for split_label, smi_list, tgts, preds_list, ids in [
+                        ('train', train_smiles, train_targets, train_preds, train_ids),
+                        ('test',  test_smiles,  test_targets,  test_preds,  test_ids),
                     ]:
                         for j in range(len(preds_list)):
                             if preds_list[j] is None:
                                 continue
-                            row = [smi_list[j], split_label]
+                            row = ([ids[j]] if id_col else []) + [smi_list[j], split_label]
                             for i in range(len(args.task_names)):
                                 t_val = tgts[j][i]
                                 p_val = preds_list[j][i]
