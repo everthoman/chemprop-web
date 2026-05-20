@@ -151,7 +151,7 @@
 
         function refresh() {
             $.post("receiver", function(data){
-                if (data.training == 1) {
+                if (data.training == 1 && data.mode === 'train') {
                     var pct = data.progress;
                     document.getElementById("myProgress").style.display = "";
                     document.getElementById("myBar").style.width = pct + "%";

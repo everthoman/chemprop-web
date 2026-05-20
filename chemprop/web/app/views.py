@@ -31,6 +31,7 @@ from chemprop.utils import create_logger, load_task_names, load_args
 from chemprop.web.app.atom_attribution import compute_attributions
 
 TRAINING = 0
+TRAINING_MODE = ''  # 'train', 'hyperopt', or 'predict'
 PROGRESS = mp.Value('d', 0.0)
 CURRENT_LOG_PATH = ''
 ACTIVE_PROCESS = None
@@ -201,13 +202,13 @@ def receiver():
     val_curves = {}
     if CURRENT_LOG_PATH and os.path.exists(CURRENT_LOG_PATH):
         val_curves = _parse_val_curves(CURRENT_LOG_PATH)
-    return jsonify(progress=PROGRESS.value, training=TRAINING, val_curves=val_curves)
+    return jsonify(progress=PROGRESS.value, training=TRAINING, mode=TRAINING_MODE, val_curves=val_curves)
 
 
 @app.route('/cancel', methods=['POST'])
 def cancel():
     """Terminates any active training, hyperopt, or prediction subprocess."""
-    global ACTIVE_PROCESS, PROGRESS_BAR_PROCESS, CANCELLED, TRAINING, PROGRESS, CURRENT_LOG_PATH
+    global ACTIVE_PROCESS, PROGRESS_BAR_PROCESS, CANCELLED, TRAINING, TRAINING_MODE, PROGRESS, CURRENT_LOG_PATH
     for proc in [ACTIVE_PROCESS, PROGRESS_BAR_PROCESS]:
         if proc and proc.is_alive():
             proc.terminate()
@@ -218,6 +219,7 @@ def cancel():
     PROGRESS_BAR_PROCESS = None
     CANCELLED = True
     TRAINING = 0
+    TRAINING_MODE = ''
     PROGRESS = mp.Value('d', 0.0)
     CURRENT_LOG_PATH = ''
     return jsonify(success=True)
@@ -265,7 +267,7 @@ def render_train(**kwargs):
 @check_not_demo
 def train():
     """Renders the train page and performs training if request method is POST."""
-    global PROGRESS, TRAINING, CURRENT_LOG_PATH, ACTIVE_PROCESS, PROGRESS_BAR_PROCESS, CANCELLED
+    global PROGRESS, TRAINING, TRAINING_MODE, CURRENT_LOG_PATH, ACTIVE_PROCESS, PROGRESS_BAR_PROCESS, CANCELLED
 
     warnings, errors = [], []
 
@@ -350,6 +352,7 @@ def train():
             pb_proc.start()
             PROGRESS_BAR_PROCESS = pb_proc
             TRAINING = 1
+            TRAINING_MODE = 'train'
 
         CURRENT_LOG_PATH = os.path.join(temp_dir, 'verbose.log')
         train_proc = _spawn.Process(target=_train_worker,
@@ -372,6 +375,7 @@ def train():
                     pb_proc.join(timeout=2)
                 PROGRESS_BAR_PROCESS = None
                 TRAINING = 0
+                TRAINING_MODE = ''
                 PROGRESS = mp.Value('d', 0.0)
             CURRENT_LOG_PATH = ''
             if cancelled:
@@ -384,6 +388,7 @@ def train():
             pb_proc.join()
             PROGRESS_BAR_PROCESS = None
             TRAINING = 0
+            TRAINING_MODE = ''
             PROGRESS = mp.Value('d', 0.0)
 
         # Parse convergence data before temp_dir is cleaned up
@@ -628,7 +633,7 @@ def render_hyperopt(**kwargs):
 @check_not_demo
 def hyperopt_page():
     """Renders the hyperopt page and runs hyperparameter optimization if request method is POST."""
-    global PROGRESS, TRAINING, ACTIVE_PROCESS, PROGRESS_BAR_PROCESS, CANCELLED
+    global PROGRESS, TRAINING, TRAINING_MODE, ACTIVE_PROCESS, PROGRESS_BAR_PROCESS, CANCELLED
 
     warnings, errors = [], []
 
@@ -687,6 +692,7 @@ def hyperopt_page():
         pb_proc.start()
         PROGRESS_BAR_PROCESS = pb_proc
         TRAINING = 1
+        TRAINING_MODE = 'hyperopt'
 
         hyper_proc = _spawn.Process(target=_hyperopt_worker, args=(hyper_args_list,))
         hyper_proc.start()
@@ -705,6 +711,7 @@ def hyperopt_page():
                 pb_proc.join(timeout=2)
             PROGRESS_BAR_PROCESS = None
             TRAINING = 0
+            TRAINING_MODE = ''
             PROGRESS = mp.Value('d', 0.0)
             if cancelled:
                 return render_hyperopt(warnings=['Hyperopt was cancelled.'])
@@ -715,6 +722,7 @@ def hyperopt_page():
         pb_proc.join()
         PROGRESS_BAR_PROCESS = None
         TRAINING = 0
+        TRAINING_MODE = ''
         PROGRESS = mp.Value('d', 0.0)
 
     # Load best hyperparams from saved config
