@@ -109,7 +109,6 @@ Each prediction result includes an **atom contribution map**: a 2D structure ove
 - **Classification statistics table** — after training, a per-task table shows class balance, AUC, Accuracy, Precision, Recall, Specificity, F1, and MCC (all at 0.5 threshold) alongside a colour-coded confusion matrix.
 - **Identifier column** — optional column name for compound IDs; excluded from targets during training and written as an `id` column in the download CSV.
 - **Download train/test predictions** — CSV with SMILES, split membership, experimental values, and predicted values for all compounds.
-- **Early stopping** — optional patience parameter; training for each ensemble member stops if validation metric does not improve for N consecutive epochs.
 - **Cancel button** — a Cancel button is shown during training to stop the run early.
 - Default epochs changed to 50, default ensemble size to 3.
 
