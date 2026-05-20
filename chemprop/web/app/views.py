@@ -1048,6 +1048,20 @@ def delete_data(dataset: int):
     return redirect(url_for('data'))
 
 
+@app.route('/data/delete_all')
+@check_not_demo
+def delete_all_data():
+    """Deletes all datasets belonging to the current user."""
+    current_user = request.cookies.get('currentUser') or app.config['DEFAULT_USER_ID']
+    datasets = db.get_datasets(current_user)
+    for dataset in datasets:
+        db.delete_dataset(dataset['id'])
+        path = os.path.join(app.config['DATA_FOLDER'], f'{dataset["id"]}.csv')
+        if os.path.exists(path):
+            os.remove(path)
+    return redirect(url_for('data'))
+
+
 @app.route('/data/rename/<int:dataset>', methods=['POST'])
 @check_not_demo
 def rename_data(dataset: int):
@@ -1188,6 +1202,17 @@ def delete_checkpoint(checkpoint: int):
     :param checkpoint: The id of the checkpoint to delete.
     """
     db.delete_ckpt(checkpoint)
+    return redirect(url_for('checkpoints'))
+
+
+@app.route('/checkpoints/delete_all')
+@check_not_demo
+def delete_all_checkpoints():
+    """Deletes all checkpoints belonging to the current user."""
+    current_user = request.cookies.get('currentUser') or app.config['DEFAULT_USER_ID']
+    ckpts = db.get_ckpts(current_user)
+    for ckpt in ckpts:
+        db.delete_ckpt(ckpt['id'])
     return redirect(url_for('checkpoints'))
 
 
