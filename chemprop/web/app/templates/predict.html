@@ -126,7 +126,9 @@
         document.getElementById("cancelPredict").addEventListener("click", function() {
             this.textContent = "Cancelling…";
             this.disabled = true;
-            fetch("/cancel", {method: "POST"});
+            fetch("/cancel", {method: "POST"}).then(function() {
+                window.location.href = '/predict';
+            });
         });
         function refresh() {
             $.post("receiver", function(data) {

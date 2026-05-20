@@ -34,24 +34,26 @@ The web app supports the full training and prediction workflow through a browser
 
 ### Data
 
-Upload CSV files with a header row. The first column must be SMILES; all other columns are treated as targets. If your file contains a non-numeric identifier column (e.g. `chembl_id`), enter its name in the optional **Identifier column** field on upload — it will be excluded from target validation. The same field on the Train page excludes the column from model targets and passes it through to the downloaded train/test predictions CSV. Datasets can be downloaded from the Data page using their display name (e.g. `lipophilicity.csv`).
+Upload CSV files with a header row. The first column must be SMILES; all other columns are treated as targets. If your file contains a non-numeric identifier column (e.g. `chembl_id`), enter its name in the optional **Identifier column** field on upload — it will be excluded from target validation. The same field on the Train page excludes the column from model targets and passes it through to the downloaded train/test predictions CSV. Datasets can be downloaded from the Data page using their display name (e.g. `lipophilicity.csv`). Dataset names can be renamed inline by clicking **Rename** next to any dataset.
 
 ### Train
 
 Select a dataset, optionally specify an **identifier column** (a column in your CSV containing compound names or IDs — it will be excluded from targets and passed through to the download CSV), choose regression or classification, set epochs and ensemble size, and click **Train**. Optionally upload a hyperparameter config JSON (from the Hyperopt page) to train with optimized settings.
 
-A progress bar with an estimated time to completion is shown during training. A live validation convergence chart appears below the progress bar as epochs complete, showing the per-epoch validation metric for each ensemble member. After training:
+A **Cancel** button is shown during training to stop the run early. A progress bar with an estimated time to completion is shown during training. A live validation convergence chart appears below the progress bar as epochs complete, showing the per-epoch validation metric for each ensemble member. After training:
 
 - **Validation convergence chart** — per-epoch validation metric (e.g. RMSE or AUC) plotted for each ensemble model, shown at the top of the results panel.
 - **Regression** — scatter plot (predicted vs experimental) with a per-task statistics table showing R² (train) / Q² (test), RMSE, and MAE for both splits.
 - **Classification** — ROC curve with a per-task statistics table (class balance, AUC, Accuracy, Precision, Recall, Specificity, F1, MCC) and a colour-coded confusion matrix (TN/FP/FN/TP), all computed on the test set at a 0.5 threshold.
 - **Download train/test predictions** — a CSV containing SMILES, split membership (train/test), experimental values, and predicted values for all compounds. Regression columns: `smiles, split, <task>, pred_<task>`; classification columns: `smiles, split, <task>, pred_prob_<task>`.
 
-Defaults: 100 epochs, ensemble size 5.
+Defaults: 50 epochs, ensemble size 3.
 
 Results persist when switching tabs and are restored from session storage when you navigate back.
 
 ### Hyperopt
+
+A **Cancel** button is shown during hyperopt to stop the run early.
 
 Runs Bayesian hyperparameter optimization (TPE) to find the best model settings for your dataset:
 
@@ -65,11 +67,11 @@ Runs Bayesian hyperparameter optimization (TPE) to find the best model settings 
 
 ### Checkpoints
 
-Trained model checkpoints are listed on the Checkpoints page and can be downloaded as a zip file named after the checkpoint (e.g. `lipophilicity_model.zip`).
+Trained model checkpoints are listed on the Checkpoints page and can be downloaded as a zip file named after the checkpoint (e.g. `lipophilicity_model.zip`). Checkpoint names can be renamed inline by clicking **Rename** next to any checkpoint.
 
 ### Predict
 
-Select a trained checkpoint, enter SMILES (typed, drawn, or uploaded as CSV), and click **Predict**. Results can be downloaded as CSV.
+Select a trained checkpoint, enter SMILES (typed, drawn, or uploaded as CSV), and click **Predict**. A **Cancel** button is shown during prediction to stop the run early. Results can be downloaded as CSV.
 
 SMILES entered as free text can optionally include a compound identifier separated by a comma, tab, or space (e.g. `CC(=O)Oc1ccccc1C(=O)O, aspirin`). Identifiers are shown alongside predictions in the UI and included as an `id` column in the downloaded CSV. Predicted values are rounded to 3 decimal places in both the UI and the CSV.
 
@@ -82,6 +84,16 @@ Each prediction result includes an **atom contribution map**: a 2D structure ove
 ### Predict page
 - **Compound identifiers** — free-text SMILES input now accepts an optional identifier (comma, tab, or space separated). Identifiers are displayed in the results and written as an `id` column in the downloaded CSV.
 - **Rounded predictions** — predicted values are rounded to 3 decimal places in both the UI and the downloaded CSV.
+- **Cancel button** — a Cancel button is shown during prediction to stop the run early.
+
+### Hyperopt page
+- **Cancel button** — a Cancel button is shown during hyperopt to stop the run early.
+
+### Data page
+- **Rename datasets** — datasets can be renamed inline without leaving the page.
+
+### Checkpoints page
+- **Rename checkpoints** — checkpoints can be renamed inline without leaving the page.
 
 ### Train page
 - **Validation convergence chart** — live line chart of the per-epoch validation metric (one line per ensemble model) appears during training and persists in the results panel; restored from session storage on navigation.
@@ -90,7 +102,8 @@ Each prediction result includes an **atom contribution map**: a 2D structure ove
 - **Classification statistics table** — after training, a per-task table shows class balance, AUC, Accuracy, Precision, Recall, Specificity, F1, and MCC (all at 0.5 threshold) alongside a colour-coded confusion matrix.
 - **Identifier column** — optional column name for compound IDs; excluded from targets during training and written as an `id` column in the download CSV.
 - **Download train/test predictions** — CSV with SMILES, split membership, experimental values, and predicted values for all compounds.
-- Default epochs changed to 100, default ensemble size to 5.
+- **Cancel button** — a Cancel button is shown during training to stop the run early.
+- Default epochs changed to 50, default ensemble size to 3.
 
 ---
 

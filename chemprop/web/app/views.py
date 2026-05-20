@@ -255,6 +255,7 @@ def render_train(**kwargs):
 
     return render_template('train.html',
                            datasets=db.get_datasets(request.cookies.get('currentUser')),
+                           current_user=request.cookies.get('currentUser') or '',
                            cuda=app.config['CUDA'],
                            gpus=app.config['GPUS'],
                            data_upload_warnings=data_upload_warnings,
@@ -365,10 +366,16 @@ def train():
             train_proc.join(timeout=0.5)
 
         ACTIVE_PROCESS = None
+        log_path = CURRENT_LOG_PATH  # snapshot before cancel() might clear it
         cancelled = CANCELLED
         CANCELLED = False
 
-        if cancelled or train_proc.exitcode != 0:
+        # Only treat as cancelled if the process was actually killed (negative
+        # exitcode). A cancel click that arrived after natural completion should
+        # not suppress the training results.
+        was_killed = cancelled and train_proc.exitcode is not None and train_proc.exitcode < 0
+
+        if was_killed or train_proc.exitcode not in (0, None):
             if use_progress_bar:
                 if pb_proc.is_alive():
                     pb_proc.terminate()
@@ -378,7 +385,7 @@ def train():
                 TRAINING_MODE = ''
                 PROGRESS = mp.Value('d', 0.0)
             CURRENT_LOG_PATH = ''
-            if cancelled:
+            if was_killed:
                 return render_train(warnings=['Training was cancelled.'])
             errors.append('Training failed — check server logs for details.')
             return render_train(warnings=warnings, errors=errors)
@@ -392,7 +399,7 @@ def train():
             PROGRESS = mp.Value('d', 0.0)
 
         # Parse convergence data before temp_dir is cleaned up
-        val_curves = _parse_val_curves(CURRENT_LOG_PATH)
+        val_curves = _parse_val_curves(log_path)
         CURRENT_LOG_PATH = ''
 
         # Check if name overlap

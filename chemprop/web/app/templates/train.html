@@ -146,7 +146,9 @@
         document.getElementById("cancelTrain").addEventListener("click", function() {
             this.textContent = "Cancelling…";
             this.disabled = true;
-            fetch("/cancel", {method: "POST"});
+            fetch("/cancel", {method: "POST"}).then(function() {
+                window.location.href = '/train';
+            });
         });
 
         function refresh() {
@@ -230,7 +232,7 @@
                 data: { datasets: datasets },
                 options: {
                     animation: false,
-                    plugins: { legend: { display: valCurves.models.length > 1, labels: { usePointStyle: true, pointStyle: 'line', pointStyleWidth: 24 } } },
+                    plugins: { legend: { display: true, labels: { usePointStyle: true, pointStyle: 'line', pointStyleWidth: 24 } } },
                     scales: {
                         x: { type: 'linear', title: { display: true, text: 'Epoch' } },
                         y: { title: { display: true, text: valCurves.metric } }
@@ -486,6 +488,7 @@
                     try {
                         var valCurvesData = {{ val_curves | tojson if val_curves else 'null' }};
                         sessionStorage.setItem('cp_train', JSON.stringify({
+                            userId: {{ current_user | tojson }},
                             statsHtml: document.getElementById('trainStats').outerHTML,
                             plotData: plotData,
                             datasetType: datasetType,
@@ -566,6 +569,7 @@
             if (!saved) return;
             var state;
             try { state = JSON.parse(saved); } catch(e) { return; }
+            if (state.userId !== {{ current_user | tojson }}) return;
             if (!state.plotData || !state.statsHtml) return;
 
             var results = document.getElementById('trainResults');
