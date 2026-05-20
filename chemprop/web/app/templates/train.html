@@ -349,11 +349,14 @@
                 if (!canvas) return;
                 var ctx = canvas.getContext('2d');
                 if (datasetType === 'regression') {
-                    var allX = task.train.map(d => d[0]).concat(task.test.map(d => d[0]));
-                    var allY = task.train.map(d => d[1]).concat(task.test.map(d => d[1]));
-                    var minVal = Math.min.apply(null, allX.concat(allY));
-                    var maxVal = Math.max.apply(null, allX.concat(allY));
-                    var axisMin = Math.floor(minVal), axisMax = Math.ceil(maxVal);
+                    var allVals = task.train.concat(task.test)
+                        .flatMap(d => [d[0], d[1]])
+                        .filter(v => typeof v === 'number' && isFinite(v));
+                    if (!allVals.length) return;
+                    var minVal = Math.min.apply(null, allVals);
+                    var maxVal = Math.max.apply(null, allVals);
+                    var pad = (maxVal - minVal) * 0.05 || 0.5;
+                    var axisMin = minVal - pad, axisMax = maxVal + pad;
                     new Chart(ctx, {
                         type: 'scatter',
                         data: { datasets: [
@@ -364,8 +367,8 @@
                         options: {
                             plugins: { legend: { display: true, labels: { filter: item => item.text !== 'y = x' } } },
                             scales: {
-                                x: { title: { display: true, text: 'Experimental' }, min: axisMin, max: axisMax, ticks: { stepSize: 1 } },
-                                y: { title: { display: true, text: 'Predicted'    }, min: axisMin, max: axisMax, ticks: { stepSize: 1 } }
+                                x: { type: 'linear', title: { display: true, text: 'Experimental' }, min: axisMin, max: axisMax },
+                                y: { type: 'linear', title: { display: true, text: 'Predicted'    }, min: axisMin, max: axisMax }
                             },
                             onHover: function(event, elements) {
                                 if (elements.length > 0 && elements[0].datasetIndex < 2) {
