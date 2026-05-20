@@ -76,32 +76,14 @@ def _parse_val_curves(log_path):
     return {'metric': metric_name or '', 'models': models}
 
 
-def _train_worker(train_arg_list, task_names, data_path, ignore_cols, id_col, save_dir):
-    import logging as _logging
-    args = TrainArgs().parse_args(train_arg_list + ['--save_dir', save_dir])
-    args.task_names = task_names
-    data = get_data(path=data_path, smiles_columns=args.smiles_columns,
-                    ignore_columns=ignore_cols or None, store_row=bool(id_col))
-    if TRAIN_LOGGER_NAME in _logging.root.manager.loggerDict:
-        _logging.getLogger(TRAIN_LOGGER_NAME).handlers.clear()
-        del _logging.root.manager.loggerDict[TRAIN_LOGGER_NAME]
-    logger = create_logger(name=TRAIN_LOGGER_NAME, save_dir=save_dir, quiet=args.quiet)
-    run_training(args, data, logger)
+from chemprop.web.app.workers import train_worker as _train_worker
+from chemprop.web.app.workers import hyperopt_worker as _hyperopt_worker
+from chemprop.web.app.workers import predict_worker as _predict_worker
 
-
-def _hyperopt_worker(hyper_args_list):
-    from chemprop.hyperparameter_optimization import hyperopt as run_hyperopt
-    hyper_args = HyperoptArgs().parse_args(hyper_args_list)
-    run_hyperopt(hyper_args)
-
-
-def _predict_worker(arguments, smiles, result_queue):
-    try:
-        args = PredictArgs().parse_args(arguments)
-        preds = make_predictions(args=args, smiles=smiles, return_uncertainty=False)
-        result_queue.put({'success': True, 'preds': preds})
-    except Exception as e:
-        result_queue.put({'success': False, 'error': str(e)})
+# Use spawn so CUDA can be initialized fresh in each worker subprocess.
+# Progress-bar subprocesses stay on the default (fork) context because they
+# never touch CUDA and forking them is safe and cheap.
+_spawn = mp.get_context('spawn')
 
 
 @app.context_processor
@@ -370,9 +352,9 @@ def train():
             TRAINING = 1
 
         CURRENT_LOG_PATH = os.path.join(temp_dir, 'verbose.log')
-        train_proc = mp.Process(target=_train_worker,
-                                args=(train_arg_list, args.task_names, data_path,
-                                      ignore_cols, id_col, temp_dir))
+        train_proc = _spawn.Process(target=_train_worker,
+                                    args=(train_arg_list, args.task_names, data_path,
+                                          ignore_cols, id_col, temp_dir))
         train_proc.start()
         ACTIVE_PROCESS = train_proc
 
@@ -706,7 +688,7 @@ def hyperopt_page():
         PROGRESS_BAR_PROCESS = pb_proc
         TRAINING = 1
 
-        hyper_proc = mp.Process(target=_hyperopt_worker, args=(hyper_args_list,))
+        hyper_proc = _spawn.Process(target=_hyperopt_worker, args=(hyper_args_list,))
         hyper_proc.start()
         ACTIVE_PROCESS = hyper_proc
 
@@ -855,8 +837,8 @@ def predict():
     global ACTIVE_PROCESS, CANCELLED
 
     # Run predictions in a subprocess so they can be cancelled
-    result_queue = mp.Queue()
-    pred_proc = mp.Process(target=_predict_worker, args=(arguments, smiles, result_queue))
+    result_queue = _spawn.Queue()
+    pred_proc = _spawn.Process(target=_predict_worker, args=(arguments, smiles, result_queue))
     pred_proc.start()
     ACTIVE_PROCESS = pred_proc
 
