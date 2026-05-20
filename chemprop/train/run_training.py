@@ -354,6 +354,11 @@ def run_training(args: TrainArgs,
                 save_checkpoint(os.path.join(save_dir, MODEL_FILE_NAME), model, scaler, features_scaler,
                                 atom_descriptor_scaler, bond_descriptor_scaler, atom_bond_scaler, args)
 
+            patience = getattr(args, 'patience', None)
+            if patience and (epoch - best_epoch) >= patience:
+                info(f'Early stopping: no improvement in {patience} epochs (best epoch {best_epoch})')
+                break
+
         # Evaluate on test set using model with best validation score
         info(f'Model {model_idx} best validation {args.metric} = {best_score:.6f} on epoch {best_epoch}')
         model = load_checkpoint(os.path.join(save_dir, MODEL_FILE_NAME), device=args.device, logger=logger)

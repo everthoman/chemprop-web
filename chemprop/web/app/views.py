@@ -280,6 +280,8 @@ def train():
         request.form['dataName'], int(request.form['epochs']), \
         int(request.form['ensembleSize']), request.form['checkpointName']
     gpu = request.form.get('gpu')
+    patience_raw = request.form.get('patience', '').strip()
+    patience = int(patience_raw) if patience_raw else None
     data_path = os.path.join(app.config['DATA_FOLDER'], f'{data_name}.csv')
     dataset_type = request.form.get('datasetType', 'regression')
     id_col = request.form.get('idColumn', '').strip() or None
@@ -358,7 +360,7 @@ def train():
         CURRENT_LOG_PATH = os.path.join(temp_dir, 'verbose.log')
         train_proc = _spawn.Process(target=_train_worker,
                                     args=(train_arg_list, args.task_names, data_path,
-                                          ignore_cols, id_col, temp_dir))
+                                          ignore_cols, id_col, temp_dir, patience))
         train_proc.start()
         ACTIVE_PROCESS = train_proc
 
