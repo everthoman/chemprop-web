@@ -34,7 +34,7 @@ The web app supports the full training and prediction workflow through a browser
 
 ### Data
 
-Upload CSV files with a header row. The first column must be SMILES; all other columns are treated as targets. If your file contains a non-numeric identifier column (e.g. `chembl_id`), enter its name in the optional **Identifier column** field on upload — it will be excluded from target validation. The same field on the Train page excludes the column from model targets and passes it through to the downloaded train/test predictions CSV. Datasets can be downloaded from the Data page using their display name (e.g. `lipophilicity.csv`). Dataset names can be renamed inline by clicking **Rename** next to any dataset.
+Upload CSV files with a header row. The first column must be SMILES; all other columns are treated as targets. If your file contains a non-numeric identifier column (e.g. `chembl_id`), enter its name in the optional **Identifier column** field on upload — it will be excluded from target validation. The same field on the Train page excludes the column from model targets and passes it through to the downloaded train/test predictions CSV. Datasets can be downloaded from the Data page using their display name (e.g. `lipophilicity.csv`). Dataset names can be renamed inline by clicking **Rename** next to any dataset. All datasets for the current user can be removed at once with the **Delete All** button.
 
 ### Train
 
@@ -67,7 +67,7 @@ Runs Bayesian hyperparameter optimization (TPE) to find the best model settings 
 
 ### Checkpoints
 
-Trained model checkpoints are listed on the Checkpoints page and can be downloaded as a zip file named after the checkpoint (e.g. `lipophilicity_model.zip`). Checkpoint names can be renamed inline by clicking **Rename** next to any checkpoint.
+Trained model checkpoints are listed on the Checkpoints page and can be downloaded as a zip file named after the checkpoint (e.g. `lipophilicity_model.zip`). Checkpoint names can be renamed inline by clicking **Rename** next to any checkpoint. All checkpoints for the current user can be removed at once with the **Delete All** button.
 
 ### Predict
 
@@ -91,9 +91,11 @@ Each prediction result includes an **atom contribution map**: a 2D structure ove
 
 ### Data page
 - **Rename datasets** — datasets can be renamed inline without leaving the page.
+- **Delete All** — removes all datasets for the current user in one click.
 
 ### Checkpoints page
 - **Rename checkpoints** — checkpoints can be renamed inline without leaving the page.
+- **Delete All** — removes all checkpoints for the current user in one click.
 
 ### Train page
 - **Validation convergence chart** — live line chart of the per-epoch validation metric (one line per ensemble model) appears during training and persists in the results panel; restored from session storage on navigation.
