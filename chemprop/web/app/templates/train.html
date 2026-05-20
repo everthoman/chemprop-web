@@ -35,13 +35,13 @@
         <br>
 
         <h5>Epochs</h5>
-        <input type="number" name="epochs" min="1" step="1" value="100" required>
+        <input type="number" name="epochs" min="1" step="1" value="50" required>
 
         <h5>Ensemble Size</h5>
         <select name="ensembleSize" required>
             <option value="1">1</option>
-            <option value="3">3</option>
-            <option value="5" selected="selected">5</option>
+            <option value="3" selected="selected">3</option>
+            <option value="5">5</option>
             <option value="10">10</option>
         </select>
 
@@ -221,7 +221,7 @@
                 data: { datasets: datasets },
                 options: {
                     animation: false,
-                    plugins: { legend: { display: valCurves.models.length > 1 } },
+                    plugins: { legend: { display: valCurves.models.length > 1, labels: { usePointStyle: true, pointStyle: 'line', pointStyleWidth: 24 } } },
                     scales: {
                         x: { type: 'linear', title: { display: true, text: 'Epoch' } },
                         y: { title: { display: true, text: valCurves.metric } }
