@@ -482,7 +482,7 @@ def train():
                     r2 = float(1 - ss_res / ss_tot) if ss_tot > 0 else 0.0
                     rmse = float(np.sqrt(np.mean((y - p) ** 2)))
                     mae = float(np.mean(np.abs(y - p)))
-                    return {'r2': round(r2, 3), 'rmse': round(rmse, 3), 'mae': round(mae, 3), 'n': len(pts)}
+                    return {'r2': f'{r2:.3f}', 'rmse': f'{rmse:.3f}', 'mae': f'{mae:.3f}', 'n': len(pts)}
 
                 plot_data = []
                 for i, task_name in enumerate(args.task_names):
