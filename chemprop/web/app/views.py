@@ -1041,6 +1041,19 @@ def delete_data(dataset: int):
     return redirect(url_for('data'))
 
 
+@app.route('/data/rename/<int:dataset>', methods=['POST'])
+@check_not_demo
+def rename_data(dataset: int):
+    new_name = request.form.get('name', '').strip()
+    if not new_name:
+        return jsonify(success=False, error='Name cannot be empty.')
+    try:
+        db.rename_dataset(dataset, new_name)
+        return jsonify(success=True, name=new_name)
+    except Exception:
+        return jsonify(success=False, error='That name is already in use.')
+
+
 @app.route('/checkpoints')
 @check_not_demo
 def checkpoints():
@@ -1169,3 +1182,16 @@ def delete_checkpoint(checkpoint: int):
     """
     db.delete_ckpt(checkpoint)
     return redirect(url_for('checkpoints'))
+
+
+@app.route('/checkpoints/rename/<int:checkpoint>', methods=['POST'])
+@check_not_demo
+def rename_checkpoint(checkpoint: int):
+    new_name = request.form.get('name', '').strip()
+    if not new_name:
+        return jsonify(success=False, error='Name cannot be empty.')
+    try:
+        db.rename_ckpt(checkpoint, new_name)
+        return jsonify(success=True, name=new_name)
+    except Exception:
+        return jsonify(success=False, error='That name is already in use.')

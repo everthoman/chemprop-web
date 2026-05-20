@@ -285,3 +285,15 @@ def delete_dataset(dataset_id: int):
     cur = db.execute('DELETE FROM dataset WHERE id = ?', (dataset_id,))
     db.commit()
     cur.close()
+
+
+def rename_dataset(dataset_id: int, new_name: str) -> None:
+    db = get_db()
+    db.execute('UPDATE dataset SET dataset_name = ? WHERE id = ?', (new_name, dataset_id))
+    db.commit()
+
+
+def rename_ckpt(ckpt_id: int, new_name: str) -> None:
+    db = get_db()
+    db.execute('UPDATE ckpt SET ckpt_name = ? WHERE id = ?', (new_name, ckpt_id))
+    db.commit()

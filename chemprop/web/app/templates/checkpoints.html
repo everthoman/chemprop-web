@@ -13,21 +13,90 @@
     <h3>Model Checkpoints</h3>
     <table class="table table-hover" style="width:auto">
         {% for checkpoint in checkpoints %}
-            <tr>
-                <th style="vertical-align: middle;">{{ checkpoint['ckpt_name'] }}</th>
-                <th style="vertical-align: middle;">Epochs: {{ checkpoint['epochs'] }}</th>
-                <th style="vertical-align: middle;">Ensemble Size: {{ checkpoint['ensemble_size'] }}</th>
-                <th style="vertical-align: middle;">Training Size: {{ checkpoint['training_size'] }} molecules</th>
-                <th>
+            <tr id="ckpt-row-{{ checkpoint['id'] }}">
+                <td style="vertical-align:middle;">
+                    <span class="item-name">{{ checkpoint['ckpt_name'] }}</span>
+                    <input class="item-name-input form-control input-sm" style="display:none; width:220px;" value="{{ checkpoint['ckpt_name'] }}">
+                    <span class="rename-error text-danger" style="font-size:0.85em; margin-left:6px;"></span>
+                </td>
+                <td style="vertical-align:middle;">Epochs: {{ checkpoint['epochs'] }}</td>
+                <td style="vertical-align:middle;">Ensemble Size: {{ checkpoint['ensemble_size'] }}</td>
+                <td style="vertical-align:middle;">Training Size: {{ checkpoint['training_size'] }} molecules</td>
+                <td>
                     <a href="{{ url_for('download_checkpoint', checkpoint=checkpoint['id']) }}">
                         <button class="btn btn-default btn-sm">Download</button>
                     </a>
+                    <button class="btn btn-default btn-sm btn-rename">Rename</button>
+                    <button class="btn btn-primary btn-sm btn-save" style="display:none">Save</button>
+                    <button class="btn btn-default btn-sm btn-cancel-rename" style="display:none">Cancel</button>
                     <a href="{{ url_for('delete_checkpoint', checkpoint=checkpoint['id']) }}"
                        onclick="return confirm('Delete checkpoint \'{{ checkpoint['ckpt_name'] }}\'? This cannot be undone.')">
                         <button class="btn btn-danger btn-sm">Delete</button>
                     </a>
-                </th>
+                </td>
             </tr>
         {% endfor %}
     </table>
+
+    <script>
+        function initRename(row, renameUrl) {
+            var nameSpan = row.querySelector('.item-name');
+            var nameInput = row.querySelector('.item-name-input');
+            var errSpan = row.querySelector('.rename-error');
+            var btnRename = row.querySelector('.btn-rename');
+            var btnSave = row.querySelector('.btn-save');
+            var btnCancel = row.querySelector('.btn-cancel-rename');
+
+            btnRename.addEventListener('click', function() {
+                nameSpan.style.display = 'none';
+                nameInput.value = nameSpan.textContent;
+                nameInput.style.display = 'inline-block';
+                btnRename.style.display = 'none';
+                btnSave.style.display = '';
+                btnCancel.style.display = '';
+                errSpan.textContent = '';
+                nameInput.focus();
+                nameInput.select();
+            });
+
+            btnCancel.addEventListener('click', function() {
+                nameSpan.style.display = '';
+                nameInput.style.display = 'none';
+                btnRename.style.display = '';
+                btnSave.style.display = 'none';
+                btnCancel.style.display = 'none';
+                errSpan.textContent = '';
+            });
+
+            function doSave() {
+                var newName = nameInput.value.trim();
+                if (!newName) return;
+                var body = new FormData();
+                body.append('name', newName);
+                fetch(renameUrl, {method: 'POST', body: body})
+                    .then(function(r) { return r.json(); })
+                    .then(function(data) {
+                        if (data.success) {
+                            nameSpan.textContent = data.name;
+                            btnCancel.click();
+                        } else {
+                            errSpan.textContent = data.error;
+                        }
+                    });
+            }
+
+            btnSave.addEventListener('click', doSave);
+            nameInput.addEventListener('keydown', function(e) {
+                if (e.key === 'Enter') doSave();
+                if (e.key === 'Escape') btnCancel.click();
+            });
+        }
+
+        {% for checkpoint in checkpoints %}
+        initRename(
+            document.getElementById('ckpt-row-{{ checkpoint["id"] }}'),
+            '{{ url_for("rename_checkpoint", checkpoint=checkpoint["id"]) }}'
+        );
+        {% endfor %}
+    </script>
 {% endblock %}
