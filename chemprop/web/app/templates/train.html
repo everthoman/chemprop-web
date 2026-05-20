@@ -71,6 +71,7 @@
 
         <button id="train" class="btn btn-primary btn-md">Train</button>
         <button id="training" class="btn btn-default btn-md disabled" disabled="disabled" style="display:none">Training</button>
+        <button id="cancelTrain" class="btn btn-danger btn-md" style="display:none">Cancel</button>
     </form>
 
     <br>
@@ -133,12 +134,19 @@
             document.getElementById("train").form.submit();
             document.getElementById("train").style.display = "none";
             document.getElementById("training").style.display = "";
+            document.getElementById("cancelTrain").style.display = "";
             document.getElementById("myProgress").style.display = "";
             document.getElementById("myBar").style.width = "2%";
             document.getElementById("myBar").style.backgroundColor = "hsl(0, 80%, 45%)";
             document.getElementById("etaDisplay").textContent = '';
             var results = document.getElementById("trainResults");
             if (results) results.style.display = "none";
+        });
+
+        document.getElementById("cancelTrain").addEventListener("click", function() {
+            this.textContent = "Cancelling…";
+            this.disabled = true;
+            fetch("/cancel", {method: "POST"});
         });
 
         function refresh() {

@@ -65,6 +65,7 @@
 
         <button id="start" class="btn btn-primary btn-md">Start</button>
         <button id="running" class="btn btn-default btn-md disabled" disabled="disabled" style="display:none">Running</button>
+        <button id="cancelHyperopt" class="btn btn-danger btn-md" style="display:none">Cancel</button>
     </form>
 
     <br>
@@ -99,12 +100,19 @@
             document.getElementById("hyperoptForm").submit();
             document.getElementById("start").style.display = "none";
             document.getElementById("running").style.display = "";
+            document.getElementById("cancelHyperopt").style.display = "";
             document.getElementById("myProgress").style.display = "";
             document.getElementById("myBar").style.width = "2%";
             document.getElementById("myBar").style.backgroundColor = "hsl(0, 80%, 45%)";
             document.getElementById("progressLabel").style.display = "";
             var results = document.getElementById("hyperoptResults");
             if (results) results.style.display = "none";
+        });
+
+        document.getElementById("cancelHyperopt").addEventListener("click", function() {
+            this.textContent = "Cancelling…";
+            this.disabled = true;
+            fetch("/cancel", {method: "POST"});
         });
 
         function refresh() {

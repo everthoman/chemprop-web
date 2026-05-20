@@ -112,8 +112,23 @@
             <br>
         {% endif %}
 
-        <button type="submit" class="btn btn-primary btn-md">Predict</button>
+        <button id="predictBtn" type="submit" class="btn btn-primary btn-md">Predict</button>
+        <button id="predictingBtn" class="btn btn-default btn-md disabled" disabled="disabled" style="display:none">Predicting</button>
+        <button id="cancelPredict" class="btn btn-danger btn-md" style="display:none">Cancel</button>
     </form>
+
+    <script>
+        document.querySelector("form").addEventListener("submit", function() {
+            document.getElementById("predictBtn").style.display = "none";
+            document.getElementById("predictingBtn").style.display = "";
+            document.getElementById("cancelPredict").style.display = "";
+        });
+        document.getElementById("cancelPredict").addEventListener("click", function() {
+            this.textContent = "Cancelling…";
+            this.disabled = true;
+            fetch("/cancel", {method: "POST"});
+        });
+    </script>
 
     <br>
 

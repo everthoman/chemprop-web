@@ -33,6 +33,9 @@ from chemprop.web.app.atom_attribution import compute_attributions
 TRAINING = 0
 PROGRESS = mp.Value('d', 0.0)
 CURRENT_LOG_PATH = ''
+ACTIVE_PROCESS = None
+PROGRESS_BAR_PROCESS = None
+CANCELLED = False
 
 
 def _parse_val_curves(log_path):
@@ -71,6 +74,34 @@ def _parse_val_curves(log_path):
         pass
 
     return {'metric': metric_name or '', 'models': models}
+
+
+def _train_worker(train_arg_list, task_names, data_path, ignore_cols, id_col, save_dir):
+    import logging as _logging
+    args = TrainArgs().parse_args(train_arg_list + ['--save_dir', save_dir])
+    args.task_names = task_names
+    data = get_data(path=data_path, smiles_columns=args.smiles_columns,
+                    ignore_columns=ignore_cols or None, store_row=bool(id_col))
+    if TRAIN_LOGGER_NAME in _logging.root.manager.loggerDict:
+        _logging.getLogger(TRAIN_LOGGER_NAME).handlers.clear()
+        del _logging.root.manager.loggerDict[TRAIN_LOGGER_NAME]
+    logger = create_logger(name=TRAIN_LOGGER_NAME, save_dir=save_dir, quiet=args.quiet)
+    run_training(args, data, logger)
+
+
+def _hyperopt_worker(hyper_args_list):
+    from chemprop.hyperparameter_optimization import hyperopt as run_hyperopt
+    hyper_args = HyperoptArgs().parse_args(hyper_args_list)
+    run_hyperopt(hyper_args)
+
+
+def _predict_worker(arguments, smiles, result_queue):
+    try:
+        args = PredictArgs().parse_args(arguments)
+        preds = make_predictions(args=args, smiles=smiles, return_uncertainty=False)
+        result_queue.put({'success': True, 'preds': preds})
+    except Exception as e:
+        result_queue.put({'success': False, 'error': str(e)})
 
 
 @app.context_processor
@@ -191,6 +222,25 @@ def receiver():
     return jsonify(progress=PROGRESS.value, training=TRAINING, val_curves=val_curves)
 
 
+@app.route('/cancel', methods=['POST'])
+def cancel():
+    """Terminates any active training, hyperopt, or prediction subprocess."""
+    global ACTIVE_PROCESS, PROGRESS_BAR_PROCESS, CANCELLED, TRAINING, PROGRESS, CURRENT_LOG_PATH
+    for proc in [ACTIVE_PROCESS, PROGRESS_BAR_PROCESS]:
+        if proc and proc.is_alive():
+            proc.terminate()
+            proc.join(timeout=3)
+            if proc.is_alive():
+                proc.kill()
+    ACTIVE_PROCESS = None
+    PROGRESS_BAR_PROCESS = None
+    CANCELLED = True
+    TRAINING = 0
+    PROGRESS = mp.Value('d', 0.0)
+    CURRENT_LOG_PATH = ''
+    return jsonify(success=True)
+
+
 @app.route('/')
 def home():
     """Renders the home page."""
@@ -233,7 +283,7 @@ def render_train(**kwargs):
 @check_not_demo
 def train():
     """Renders the train page and performs training if request method is POST."""
-    global PROGRESS, TRAINING, CURRENT_LOG_PATH
+    global PROGRESS, TRAINING, CURRENT_LOG_PATH, ACTIVE_PROCESS, PROGRESS_BAR_PROCESS, CANCELLED
 
     warnings, errors = [], []
 
@@ -271,6 +321,11 @@ def train():
     ]
     if config_path is not None:
         train_arg_list += ['--config_path', config_path]
+    if gpu is not None:
+        if gpu == 'None':
+            train_arg_list.append('--no_cuda')
+        else:
+            train_arg_list += ['--gpu', gpu]
     args = TrainArgs().parse_args(train_arg_list)
 
     # Get task names
@@ -278,7 +333,6 @@ def train():
 
     # Check if regression/classification selection matches data
     data = get_data(path=data_path, smiles_columns=args.smiles_columns, ignore_columns=ignore_cols)
-    # Set the number of molecules through the length of the smiles_columns for now, we need to add an option to the site later
 
     targets = data.targets()
     unique_targets = {target for row in targets for target in row if target is not None}
@@ -292,12 +346,6 @@ def train():
         errors.append('Selected regression dataset but all labels are 0 or 1. Select classification instead.')
 
         return render_train(warnings=warnings, errors=errors)
-
-    if gpu is not None:
-        if gpu == 'None':
-            args.cuda = False
-        else:
-            args.gpu = int(gpu)
 
     current_user = request.cookies.get('currentUser')
 
@@ -316,27 +364,43 @@ def train():
         args.save_dir = temp_dir
 
         if use_progress_bar:
-            process = mp.Process(target=progress_bar, args=(args, PROGRESS))
-            process.start()
+            pb_proc = mp.Process(target=progress_bar, args=(args, PROGRESS))
+            pb_proc.start()
+            PROGRESS_BAR_PROCESS = pb_proc
             TRAINING = 1
 
-        # Clear stale logger so create_logger writes to this run's save_dir
-        import logging as _logging
-        if TRAIN_LOGGER_NAME in _logging.root.manager.loggerDict:
-            stale = _logging.getLogger(TRAIN_LOGGER_NAME)
-            stale.handlers.clear()
-            del _logging.root.manager.loggerDict[TRAIN_LOGGER_NAME]
+        CURRENT_LOG_PATH = os.path.join(temp_dir, 'verbose.log')
+        train_proc = mp.Process(target=_train_worker,
+                                args=(train_arg_list, args.task_names, data_path,
+                                      ignore_cols, id_col, temp_dir))
+        train_proc.start()
+        ACTIVE_PROCESS = train_proc
 
-        # Run training
-        logger = create_logger(name=TRAIN_LOGGER_NAME, save_dir=args.save_dir, quiet=args.quiet)
-        CURRENT_LOG_PATH = os.path.join(args.save_dir, 'verbose.log')
-        run_training(args, data, logger)
+        while train_proc.is_alive():
+            train_proc.join(timeout=0.5)
+
+        ACTIVE_PROCESS = None
+        cancelled = CANCELLED
+        CANCELLED = False
+
+        if cancelled or train_proc.exitcode != 0:
+            if use_progress_bar:
+                if pb_proc.is_alive():
+                    pb_proc.terminate()
+                    pb_proc.join(timeout=2)
+                PROGRESS_BAR_PROCESS = None
+                TRAINING = 0
+                PROGRESS = mp.Value('d', 0.0)
+            CURRENT_LOG_PATH = ''
+            if cancelled:
+                return render_train(warnings=['Training was cancelled.'])
+            errors.append('Training failed — check server logs for details.')
+            return render_train(warnings=warnings, errors=errors)
 
         if use_progress_bar:
             PROGRESS.value = 100
-            process.join()
-
-            # Reset globals
+            pb_proc.join()
+            PROGRESS_BAR_PROCESS = None
             TRAINING = 0
             PROGRESS = mp.Value('d', 0.0)
 
@@ -582,7 +646,7 @@ def render_hyperopt(**kwargs):
 @check_not_demo
 def hyperopt_page():
     """Renders the hyperopt page and runs hyperparameter optimization if request method is POST."""
-    global PROGRESS, TRAINING
+    global PROGRESS, TRAINING, ACTIVE_PROCESS, PROGRESS_BAR_PROCESS, CANCELLED
 
     warnings, errors = [], []
 
@@ -636,18 +700,38 @@ def hyperopt_page():
         hyper_args = HyperoptArgs().parse_args(hyper_args_list)
         hyper_args.task_names = get_task_names(path=data_path, smiles_columns=hyper_args.smiles_columns)
 
-        # Start progress monitoring
-        process = mp.Process(target=hyperopt_progress_bar,
+        pb_proc = mp.Process(target=hyperopt_progress_bar,
                              args=(hyper_args.hyperopt_checkpoint_dir, num_iters, PROGRESS))
-        process.start()
+        pb_proc.start()
+        PROGRESS_BAR_PROCESS = pb_proc
         TRAINING = 1
 
-        # Run hyperparameter optimization
-        from chemprop.hyperparameter_optimization import hyperopt as run_hyperopt
-        run_hyperopt(hyper_args)
+        hyper_proc = mp.Process(target=_hyperopt_worker, args=(hyper_args_list,))
+        hyper_proc.start()
+        ACTIVE_PROCESS = hyper_proc
+
+        while hyper_proc.is_alive():
+            hyper_proc.join(timeout=0.5)
+
+        ACTIVE_PROCESS = None
+        cancelled = CANCELLED
+        CANCELLED = False
+
+        if cancelled or hyper_proc.exitcode != 0:
+            if pb_proc.is_alive():
+                pb_proc.terminate()
+                pb_proc.join(timeout=2)
+            PROGRESS_BAR_PROCESS = None
+            TRAINING = 0
+            PROGRESS = mp.Value('d', 0.0)
+            if cancelled:
+                return render_hyperopt(warnings=['Hyperopt was cancelled.'])
+            errors.append('Hyperopt failed — check server logs for details.')
+            return render_hyperopt(warnings=warnings, errors=errors)
 
         PROGRESS.value = 100
-        process.join()
+        pb_proc.join()
+        PROGRESS_BAR_PROCESS = None
         TRAINING = 0
         PROGRESS = mp.Value('d', 0.0)
 
@@ -768,10 +852,30 @@ def predict():
             arguments.append('--no_features_scaling')
 
     # Parse arguments
-    args = PredictArgs().parse_args(arguments)
+    global ACTIVE_PROCESS, CANCELLED
 
-    # Run predictions
-    preds = make_predictions(args=args, smiles=smiles, return_uncertainty=False)
+    # Run predictions in a subprocess so they can be cancelled
+    result_queue = mp.Queue()
+    pred_proc = mp.Process(target=_predict_worker, args=(arguments, smiles, result_queue))
+    pred_proc.start()
+    ACTIVE_PROCESS = pred_proc
+
+    while pred_proc.is_alive():
+        pred_proc.join(timeout=0.5)
+
+    ACTIVE_PROCESS = None
+    cancelled = CANCELLED
+    CANCELLED = False
+
+    if cancelled:
+        return render_predict(warnings=['Prediction was cancelled.'])
+    if pred_proc.exitcode != 0:
+        return render_predict(errors=['Prediction failed — check server logs for details.'])
+
+    result = result_queue.get_nowait()
+    if not result['success']:
+        return render_predict(errors=[result['error']])
+    preds = result['preds']
 
     if all(p is None for p in preds):
         return render_predict(errors=['All SMILES are invalid'])
