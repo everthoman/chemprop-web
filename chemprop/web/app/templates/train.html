@@ -218,7 +218,7 @@
             var colors = ['rgba(54,162,235,1)', 'rgba(255,99,132,1)', 'rgba(75,192,192,1)', 'rgba(255,159,64,1)'];
             var datasets = valCurves.models.map(function(scores, i) {
                 return {
-                    label: valCurves.models.length > 1 ? 'Model ' + i : valCurves.metric,
+                    label: 'Model ' + i,
                     data: scores.map(function(s, j) { return {x: j, y: s}; }),
                     borderColor: colors[i % colors.length],
                     backgroundColor: 'transparent',
@@ -252,7 +252,7 @@
                 valCurves.models.forEach(function(scores, i) {
                     while (_convergenceLiveChart.data.datasets.length <= i) {
                         _convergenceLiveChart.data.datasets.push({
-                            label: valCurves.models.length > 1 ? 'Model ' + i : valCurves.metric,
+                            label: 'Model ' + i,
                             data: [],
                             borderColor: colors[i % colors.length],
                             backgroundColor: 'transparent',
