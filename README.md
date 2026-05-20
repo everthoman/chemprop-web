@@ -38,7 +38,7 @@ Upload CSV files with a header row. The first column must be SMILES; all other c
 
 ### Train
 
-Select a dataset, optionally specify an **identifier column** (a column in your CSV containing compound names or IDs — it will be excluded from targets and passed through to the download CSV), choose regression or classification, set epochs and ensemble size, and click **Train**. Optionally upload a hyperparameter config JSON (from the Hyperopt page) to train with optimized settings.
+Select a dataset, optionally specify an **identifier column** (a column in your CSV containing compound names or IDs — it will be excluded from targets and passed through to the download CSV), choose regression or classification, set epochs and ensemble size, and click **Train**. Optionally upload a hyperparameter config JSON (from the Hyperopt page) to train with optimized settings. Optionally set an **early stopping patience** (number of epochs without improvement before training stops for that ensemble member; disabled by default).
 
 A **Cancel** button is shown during training to stop the run early. A progress bar with an estimated time to completion is shown during training. A live validation convergence chart appears below the progress bar as epochs complete, showing the per-epoch validation metric for each ensemble member. After training:
 
@@ -104,6 +104,7 @@ Each prediction result includes an **atom contribution map**: a 2D structure ove
 - **Classification statistics table** — after training, a per-task table shows class balance, AUC, Accuracy, Precision, Recall, Specificity, F1, and MCC (all at 0.5 threshold) alongside a colour-coded confusion matrix.
 - **Identifier column** — optional column name for compound IDs; excluded from targets during training and written as an `id` column in the download CSV.
 - **Download train/test predictions** — CSV with SMILES, split membership, experimental values, and predicted values for all compounds.
+- **Early stopping** — optional patience parameter; training for each ensemble member stops if validation metric does not improve for N consecutive epochs.
 - **Cancel button** — a Cancel button is shown during training to stop the run early.
 - Default epochs changed to 50, default ensemble size to 3.
 
