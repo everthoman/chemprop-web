@@ -128,6 +128,16 @@
             this.disabled = true;
             fetch("/cancel", {method: "POST"});
         });
+        function refresh() {
+            $.post("receiver", function(data) {
+                if (data.training == 1 && data.mode === 'predict') {
+                    document.getElementById("predictBtn").style.display = "none";
+                    document.getElementById("predictingBtn").style.display = "";
+                    document.getElementById("cancelPredict").style.display = "";
+                }
+            });
+        }
+        setInterval(refresh, 500);
     </script>
 
     <br>

@@ -842,18 +842,22 @@ def predict():
             arguments.append('--no_features_scaling')
 
     # Parse arguments
-    global ACTIVE_PROCESS, CANCELLED
+    global ACTIVE_PROCESS, CANCELLED, TRAINING, TRAINING_MODE
 
     # Run predictions in a subprocess so they can be cancelled
     result_queue = _spawn.Queue()
     pred_proc = _spawn.Process(target=_predict_worker, args=(arguments, smiles, result_queue))
     pred_proc.start()
     ACTIVE_PROCESS = pred_proc
+    TRAINING = 1
+    TRAINING_MODE = 'predict'
 
     while pred_proc.is_alive():
         pred_proc.join(timeout=0.5)
 
     ACTIVE_PROCESS = None
+    TRAINING = 0
+    TRAINING_MODE = ''
     cancelled = CANCELLED
     CANCELLED = False
 
