@@ -4,6 +4,7 @@ from functools import wraps
 import csv
 import io
 import os
+import re
 import sys
 import shutil
 from tempfile import TemporaryDirectory, NamedTemporaryFile
@@ -31,6 +32,45 @@ from chemprop.web.app.atom_attribution import compute_attributions
 
 TRAINING = 0
 PROGRESS = mp.Value('d', 0.0)
+CURRENT_LOG_PATH = ''
+
+
+def _parse_val_curves(log_path):
+    """Parse verbose.log and return per-model validation scores by epoch."""
+    models = []
+    current_scores = None
+    current_epoch = None
+    epoch_seen = set()
+    metric_name = None
+
+    try:
+        with open(log_path, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if re.match(r'^(Building|Loading) model \d+', line):
+                    current_scores = []
+                    models.append(current_scores)
+                    epoch_seen = set()
+                    current_epoch = None
+                    continue
+                m = re.match(r'^Epoch (\d+)$', line)
+                if m:
+                    current_epoch = int(m.group(1))
+                    continue
+                m = re.match(r'^Validation (\w+) = ([\d.eE+\-]+)$', line)
+                if m and current_epoch is not None and current_epoch not in epoch_seen:
+                    if current_scores is None:
+                        current_scores = []
+                        models.append(current_scores)
+                    if metric_name is None:
+                        metric_name = m.group(1)
+                    if m.group(1) == metric_name:
+                        current_scores.append(float(m.group(2)))
+                        epoch_seen.add(current_epoch)
+    except Exception:
+        pass
+
+    return {'metric': metric_name or '', 'models': models}
 
 
 @app.context_processor
@@ -145,7 +185,10 @@ def format_float_list(array: List[float], precision: int = 4) -> List[str]:
 @check_not_demo
 def receiver():
     """Receiver monitoring the progress of training."""
-    return jsonify(progress=PROGRESS.value, training=TRAINING)
+    val_curves = {}
+    if CURRENT_LOG_PATH and os.path.exists(CURRENT_LOG_PATH):
+        val_curves = _parse_val_curves(CURRENT_LOG_PATH)
+    return jsonify(progress=PROGRESS.value, training=TRAINING, val_curves=val_curves)
 
 
 @app.route('/')
@@ -190,7 +233,7 @@ def render_train(**kwargs):
 @check_not_demo
 def train():
     """Renders the train page and performs training if request method is POST."""
-    global PROGRESS, TRAINING
+    global PROGRESS, TRAINING, CURRENT_LOG_PATH
 
     warnings, errors = [], []
 
@@ -286,6 +329,7 @@ def train():
 
         # Run training
         logger = create_logger(name=TRAIN_LOGGER_NAME, save_dir=args.save_dir, quiet=args.quiet)
+        CURRENT_LOG_PATH = os.path.join(args.save_dir, 'verbose.log')
         run_training(args, data, logger)
 
         if use_progress_bar:
@@ -295,6 +339,10 @@ def train():
             # Reset globals
             TRAINING = 0
             PROGRESS = mp.Value('d', 0.0)
+
+        # Parse convergence data before temp_dir is cleaned up
+        val_curves = _parse_val_curves(CURRENT_LOG_PATH)
+        CURRENT_LOG_PATH = ''
 
         # Check if name overlap
         if checkpoint_name != ckpt_name:
@@ -496,6 +544,7 @@ def train():
                         dataset_type=dataset_type,
                         plot_data=plot_data,
                         ckpt_id=ckpt_id,
+                        val_curves=val_curves,
                         train_test_preds_available=os.path.exists(tt_path),
                         warnings=warnings,
                         errors=errors)

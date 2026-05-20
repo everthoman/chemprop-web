@@ -35,13 +35,13 @@
         <br>
 
         <h5>Epochs</h5>
-        <input type="number" name="epochs" min="1" step="1" value="30" required>
+        <input type="number" name="epochs" min="1" step="1" value="100" required>
 
         <h5>Ensemble Size</h5>
         <select name="ensembleSize" required>
-            <option value="1" selected="selected">1</option>
+            <option value="1">1</option>
             <option value="3">3</option>
-            <option value="5">5</option>
+            <option value="5" selected="selected">5</option>
             <option value="10">10</option>
         </select>
 
@@ -164,6 +164,8 @@
                         document.getElementById("etaDisplay").textContent =
                             pct >= 98 ? 'Finishing up...' : ('ETA: ~' + formatETA(remaining) + ' remaining');
                     }
+
+                    if (data.val_curves) updateLiveConvergenceChart(data.val_curves);
                 }
             });
         }
@@ -190,6 +192,70 @@
 
     <!-- Chart.js and initCharts must be defined before trainResults so the inline call works -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+
+    <div id="convergenceLivePanel" style="display:none; margin-top:16px; max-width:500px">
+        <h5 style="margin-bottom:4px">Validation convergence <small id="convergenceLiveMetric" class="text-muted"></small></h5>
+        <canvas id="convergenceLiveChart" style="max-width:500px; max-height:220px;"></canvas>
+    </div>
+
+    <script>
+        var _convergenceLiveChart = null;
+
+        function renderConvergenceChart(canvasId, valCurves) {
+            var canvas = document.getElementById(canvasId);
+            if (!canvas || !valCurves || !valCurves.models || !valCurves.models.length) return null;
+            var colors = ['rgba(54,162,235,1)', 'rgba(255,99,132,1)', 'rgba(75,192,192,1)', 'rgba(255,159,64,1)'];
+            var datasets = valCurves.models.map(function(scores, i) {
+                return {
+                    label: valCurves.models.length > 1 ? 'Model ' + i : valCurves.metric,
+                    data: scores.map(function(s, j) { return {x: j, y: s}; }),
+                    borderColor: colors[i % colors.length],
+                    backgroundColor: 'transparent',
+                    pointRadius: 2,
+                    tension: 0.3,
+                    fill: false
+                };
+            });
+            return new Chart(canvas.getContext('2d'), {
+                type: 'line',
+                data: { datasets: datasets },
+                options: {
+                    animation: false,
+                    plugins: { legend: { display: valCurves.models.length > 1 } },
+                    scales: {
+                        x: { type: 'linear', title: { display: true, text: 'Epoch' } },
+                        y: { title: { display: true, text: valCurves.metric } }
+                    }
+                }
+            });
+        }
+
+        function updateLiveConvergenceChart(valCurves) {
+            if (!valCurves || !valCurves.models || valCurves.models.every(function(m) { return m.length === 0; })) return;
+            document.getElementById('convergenceLivePanel').style.display = '';
+            document.getElementById('convergenceLiveMetric').textContent = '(' + valCurves.metric + ')';
+            if (!_convergenceLiveChart) {
+                _convergenceLiveChart = renderConvergenceChart('convergenceLiveChart', valCurves);
+            } else {
+                var colors = ['rgba(54,162,235,1)', 'rgba(255,99,132,1)', 'rgba(75,192,192,1)', 'rgba(255,159,64,1)'];
+                valCurves.models.forEach(function(scores, i) {
+                    while (_convergenceLiveChart.data.datasets.length <= i) {
+                        _convergenceLiveChart.data.datasets.push({
+                            label: valCurves.models.length > 1 ? 'Model ' + i : valCurves.metric,
+                            data: [],
+                            borderColor: colors[i % colors.length],
+                            backgroundColor: 'transparent',
+                            pointRadius: 2,
+                            tension: 0.3,
+                            fill: false
+                        });
+                    }
+                    _convergenceLiveChart.data.datasets[i].data = scores.map(function(s, j) { return {x: j, y: s}; });
+                });
+                _convergenceLiveChart.update();
+            }
+        }
+    </script>
     <div id="struct-tooltip" style="display:none; position:fixed; z-index:9999; background:white; border:1px solid #ccc; border-radius:6px; box-shadow:0 4px 16px rgba(0,0,0,0.18); padding:8px 10px; pointer-events:none; max-width:450px;"></div>
     <script>
         function initCharts(plotData, datasetType, ckptId) {
@@ -336,6 +402,18 @@
         {% endif %}
         </div>
 
+        {% if val_curves and val_curves.models %}
+        <div id="convergencePanel" style="max-width:500px; margin-bottom:16px">
+            <h4>Validation convergence ({{ val_curves.metric }})</h4>
+            <canvas id="convergenceChart" style="max-width:500px; max-height:220px;"></canvas>
+        </div>
+        <script>
+            (function() {
+                renderConvergenceChart('convergenceChart', {{ val_curves | tojson }});
+            })();
+        </script>
+        {% endif %}
+
         {% if plot_data %}
             <hr>
             <div id="chartsContainer">
@@ -397,11 +475,13 @@
                     var ckptId = {{ ckpt_id | tojson }};
                     initCharts(plotData, datasetType, ckptId);
                     try {
+                        var valCurvesData = {{ val_curves | tojson if val_curves else 'null' }};
                         sessionStorage.setItem('cp_train', JSON.stringify({
                             statsHtml: document.getElementById('trainStats').outerHTML,
                             plotData: plotData,
                             datasetType: datasetType,
-                            ckptId: ckptId
+                            ckptId: ckptId,
+                            valCurves: valCurvesData
                         }));
                     } catch(e) {}
                 })();
@@ -485,6 +565,22 @@
             var tmp = document.createElement('div');
             tmp.innerHTML = state.statsHtml;
             results.appendChild(tmp.firstChild);
+
+            // Rebuild convergence chart
+            if (state.valCurves && state.valCurves.models && state.valCurves.models.length) {
+                var cvPanel = document.createElement('div');
+                cvPanel.style.cssText = 'max-width:500px; margin-bottom:16px';
+                var cvH4 = document.createElement('h4');
+                cvH4.textContent = 'Validation convergence (' + state.valCurves.metric + ')';
+                cvPanel.appendChild(cvH4);
+                var cvCanvas = document.createElement('canvas');
+                cvCanvas.id = 'convergenceChart';
+                cvCanvas.style.maxWidth = '500px';
+                cvCanvas.style.maxHeight = '220px';
+                cvPanel.appendChild(cvCanvas);
+                results.appendChild(cvPanel);
+                renderConvergenceChart('convergenceChart', state.valCurves);
+            }
 
             // Rebuild canvas elements
             var hr = document.createElement('hr');
