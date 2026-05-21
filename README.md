@@ -69,7 +69,7 @@ Runs Bayesian hyperparameter optimization (TPE) to find the best model settings 
 
 Trained model checkpoints are listed on the Checkpoints page and can be downloaded as a zip file named after the checkpoint (e.g. `lipophilicity_model.zip`). Checkpoint names can be renamed inline by clicking **Rename** next to any checkpoint. All checkpoints for the current user can be removed at once with the **Delete All** button.
 
-Checkpoints trained through the web interface have a **Results** button that opens a modal with the full training results: validation convergence chart, statistics table, and scatter plot (regression) or ROC curve (classification). Results are stored permanently alongside the checkpoint file and survive server restarts.
+Checkpoints trained through the web interface have a **Results** button that opens a modal with the full training results: validation convergence chart, statistics table, and scatter plot (regression) or ROC curve (classification). Hovering over scatter plot points shows the atom contribution heatmap, as on the Train page. Results are stored permanently alongside the checkpoint file and survive server restarts.
 
 ### Predict
 
@@ -83,10 +83,16 @@ Each prediction result includes an **atom contribution map**: a 2D structure ove
 
 ## Changes in v1.8.3
 
+- **Results modal fix** — the Results button on the Checkpoints page now opens the modal correctly. A quoting bug in the HTML (`tojson` output inside a double-quoted `onclick` attribute) caused clicks to be silently dropped; the modal also now renders outside the page container so Bootstrap z-index behaves correctly.
+- **Training completion race condition fixed** — the progress bar and live convergence chart no longer disappear when the browser is minimised and restored during training. The server-side training flag is now cleared only after results are fully prepared, so the page reloads at the right moment.
+- **Atom contribution maps in Checkpoints modal** — hovering over scatter plot points in the Results modal shows the GradCAM atom contribution heatmap, identical to the behaviour on the Train page.
+
+## Changes in v1.8.2
+
 - **Early stopping** — optional patience parameter on the Train page; training for each ensemble member stops if the validation metric does not improve for N consecutive epochs. Disabled by default.
 - **Consistent decimal formatting** — R², Q², RMSE, and MAE always display 3 decimal places in the statistics table.
-- **Robust tab switching** — navigating away from the Train page during training and returning now reliably shows progress while training runs and automatically reloads with results when it finishes, regardless of when you switched tabs. Minimising and restoring the browser during training also works correctly; the page no longer reloads prematurely before results are ready.
-- **Persistent training results on Checkpoints page** — a Results button appears next to each checkpoint trained through the web interface, opening a modal with the full validation convergence chart, statistics table, and scatter/ROC plot, including hoverable atom contribution maps on regression scatter plots. Results persist across server restarts.
+- **Robust tab switching** — navigating away from the Train page during training and returning now reliably shows progress while training runs and automatically reloads with results when it finishes, regardless of when you switched tabs.
+- **Persistent training results on Checkpoints page** — a Results button appears next to each checkpoint trained through the web interface, opening a modal with the full validation convergence chart, statistics table, and scatter/ROC plot. Results persist across server restarts.
 
 ## Changes in v1.8.1
 
