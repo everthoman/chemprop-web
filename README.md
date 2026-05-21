@@ -1,4 +1,4 @@
-# chemprop-web v1.8.2
+# chemprop-web v1.8.3
 
 A maintained fork of [Chemprop v1.7.1](https://github.com/chemprop/chemprop/tree/v1.7.1) that keeps the browser-based web interface working with modern Python and library versions.
 
@@ -81,7 +81,7 @@ Each prediction result includes an **atom contribution map**: a 2D structure ove
 
 ---
 
-## Changes in v1.8.2
+## Changes in v1.8.3
 
 - **Early stopping** — optional patience parameter on the Train page; training for each ensemble member stops if the validation metric does not improve for N consecutive epochs. Disabled by default.
 - **Consistent decimal formatting** — R², Q², RMSE, and MAE always display 3 decimal places in the statistics table.
