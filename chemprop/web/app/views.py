@@ -408,9 +408,8 @@ def train():
             PROGRESS.value = 100
             pb_proc.join()
             PROGRESS_BAR_PROCESS = None
-            TRAINING = 0
-            TRAINING_MODE = ''
-            PROGRESS = mp.Value('d', 0.0)
+            # Keep TRAINING=1 until results are fully prepared so the polling JS
+            # doesn't reload the page before LAST_TRAIN_RESULT is populated.
 
         # Parse convergence data before temp_dir is cleaned up
         val_curves = _parse_val_curves(log_path)
@@ -638,6 +637,13 @@ def train():
             json.dump({'dataset_type': dataset_type, 'plot_data': plot_data, 'val_curves': val_curves}, _f, cls=_NumpyEncoder)
     except Exception as e:
         warnings.append(f'Could not save results for Checkpoints page: {str(e)}')
+
+    # Now that LAST_TRAIN_RESULT and the JSON file are ready, allow the polling
+    # JS to detect training completion and reload to show results.
+    if use_progress_bar:
+        TRAINING = 0
+        TRAINING_MODE = ''
+        PROGRESS = mp.Value('d', 0.0)
 
     return render_train(trained=True,
                         dataset_type=dataset_type,

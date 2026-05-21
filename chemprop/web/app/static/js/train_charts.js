@@ -181,9 +181,9 @@ function initCharts(plotData, datasetType, ckptId) {
         if (!canvas) return;
         var ctx = canvas.getContext('2d');
         if (datasetType === 'regression') {
-            var allVals = task.train.concat(task.test)
-                .flatMap(function(d) { return [d[0], d[1]]; })
-                .filter(function(v) { return typeof v === 'number' && isFinite(v); });
+            var allVals = [];
+            task.train.concat(task.test).forEach(function(d) { allVals.push(d[0], d[1]); });
+            allVals = allVals.filter(function(v) { return typeof v === 'number' && isFinite(v); });
             if (!allVals.length) return;
             var minVal = Math.min.apply(null, allVals);
             var maxVal = Math.max.apply(null, allVals);
