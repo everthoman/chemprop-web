@@ -454,17 +454,32 @@ def train():
                 args=args,
             )
 
+            _use_unc = len(model_paths) > 1
             pred_arguments = [
                 '--test_path', 'None',
                 '--preds_path', os.path.join(app.config['TEMP_FOLDER'], 'train_plot_preds.csv'),
                 '--checkpoint_paths', *model_paths,
             ]
+            if _use_unc:
+                pred_arguments += ['--uncertainty_method', 'ensemble']
             if not args.cuda:
                 pred_arguments.append('--no_cuda')
             elif hasattr(args, 'gpu') and args.gpu is not None:
                 pred_arguments += ['--gpu', str(args.gpu)]
 
             pred_args = PredictArgs().parse_args(pred_arguments)
+
+            def _tt_var_to_std(row):
+                if row is None:
+                    return None
+                result = []
+                for v in row:
+                    try:
+                        fv = float(v)
+                        result.append(round(math.sqrt(fv), 3) if fv >= 0 else None)
+                    except (TypeError, ValueError):
+                        result.append(None)
+                return result
 
             def to_smiles_list(dataset):
                 smiles = dataset.smiles()
@@ -482,8 +497,15 @@ def train():
             test_ids  = [d.row.get(id_col, '') for d in test_split]  if id_col else None
 
             if dataset_type == 'regression':
-                train_preds = make_predictions(args=pred_args, smiles=to_smiles_list(train_split), return_uncertainty=False)
-                test_preds = make_predictions(args=pred_args, smiles=to_smiles_list(test_split), return_uncertainty=False)
+                if _use_unc:
+                    train_preds, train_unc = make_predictions(args=pred_args, smiles=to_smiles_list(train_split), return_uncertainty=True)
+                    test_preds, test_unc = make_predictions(args=pred_args, smiles=to_smiles_list(test_split), return_uncertainty=True)
+                    train_std = [_tt_var_to_std(r) for r in train_unc]
+                    test_std  = [_tt_var_to_std(r) for r in test_unc]
+                else:
+                    train_preds = make_predictions(args=pred_args, smiles=to_smiles_list(train_split), return_uncertainty=False)
+                    test_preds = make_predictions(args=pred_args, smiles=to_smiles_list(test_split), return_uncertainty=False)
+                    train_std = test_std = None
                 train_targets = train_split.targets()
                 test_targets = test_split.targets()
                 train_smiles = flat_smiles(train_split)
@@ -524,10 +546,13 @@ def train():
                     header = (['id'] if id_col else []) + ['smiles', 'split']
                     for name in args.task_names:
                         header += [name, f'pred_{name}']
+                    if train_std is not None:
+                        for name in args.task_names:
+                            header.append(f'std_{name}')
                     writer.writerow(header)
-                    for split_label, smi_list, tgts, preds_list, ids in [
-                        ('train', train_smiles, train_targets, train_preds, train_ids),
-                        ('test',  test_smiles,  test_targets,  test_preds,  test_ids),
+                    for split_label, smi_list, tgts, preds_list, std_list, ids in [
+                        ('train', train_smiles, train_targets, train_preds, train_std, train_ids),
+                        ('test',  test_smiles,  test_targets,  test_preds,  test_std,  test_ids),
                     ]:
                         for j in range(len(preds_list)):
                             if preds_list[j] is None:
@@ -540,6 +565,9 @@ def train():
                                     round(t_val, 3) if t_val is not None else '',
                                     round(p_val, 3) if p_val is not None else '',
                                 ]
+                            if std_list is not None:
+                                srow = std_list[j] if std_list[j] is not None else [None] * len(args.task_names)
+                                row += [v if v is not None else '' for v in srow]
                             writer.writerow(row)
 
             elif dataset_type == 'classification':
@@ -547,8 +575,15 @@ def train():
                                              accuracy_score, precision_score,
                                              recall_score, f1_score,
                                              matthews_corrcoef, confusion_matrix)
-                train_preds = make_predictions(args=pred_args, smiles=to_smiles_list(train_split), return_uncertainty=False)
-                test_preds = make_predictions(args=pred_args, smiles=to_smiles_list(test_split), return_uncertainty=False)
+                if _use_unc:
+                    train_preds, train_unc = make_predictions(args=pred_args, smiles=to_smiles_list(train_split), return_uncertainty=True)
+                    test_preds, test_unc = make_predictions(args=pred_args, smiles=to_smiles_list(test_split), return_uncertainty=True)
+                    train_std = [_tt_var_to_std(r) for r in train_unc]
+                    test_std  = [_tt_var_to_std(r) for r in test_unc]
+                else:
+                    train_preds = make_predictions(args=pred_args, smiles=to_smiles_list(train_split), return_uncertainty=False)
+                    test_preds = make_predictions(args=pred_args, smiles=to_smiles_list(test_split), return_uncertainty=False)
+                    train_std = test_std = None
                 train_targets = train_split.targets()
                 test_targets = test_split.targets()
                 train_smiles = flat_smiles(train_split)
@@ -595,10 +630,13 @@ def train():
                     header = (['id'] if id_col else []) + ['smiles', 'split']
                     for name in args.task_names:
                         header += [name, f'pred_prob_{name}']
+                    if train_std is not None:
+                        for name in args.task_names:
+                            header.append(f'std_{name}')
                     writer.writerow(header)
-                    for split_label, smi_list, tgts, preds_list, ids in [
-                        ('train', train_smiles, train_targets, train_preds, train_ids),
-                        ('test',  test_smiles,  test_targets,  test_preds,  test_ids),
+                    for split_label, smi_list, tgts, preds_list, std_list, ids in [
+                        ('train', train_smiles, train_targets, train_preds, train_std, train_ids),
+                        ('test',  test_smiles,  test_targets,  test_preds,  test_std,  test_ids),
                     ]:
                         for j in range(len(preds_list)):
                             if preds_list[j] is None:
@@ -611,6 +649,9 @@ def train():
                                     int(t_val) if t_val is not None else '',
                                     round(p_val, 3) if p_val is not None else '',
                                 ]
+                            if std_list is not None:
+                                srow = std_list[j] if std_list[j] is not None else [None] * len(args.task_names)
+                                row += [v if v is not None else '' for v in srow]
                             writer.writerow(row)
 
         except Exception as e:
