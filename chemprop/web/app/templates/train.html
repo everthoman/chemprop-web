@@ -34,6 +34,17 @@
         </div>
         <br>
 
+        <h5>Split type</h5>
+        <div class="btn-group" id="splitTypeSelect" data-toggle="buttons">
+          <label class="btn btn-primary active">
+            <input type="radio" name="splitType" value="random" autocomplete="off" checked> Random
+          </label>
+          <label class="btn btn-primary">
+            <input type="radio" name="splitType" value="scaffold_balanced" autocomplete="off"> Scaffold
+          </label>
+        </div>
+        <br>
+
         <h5>Epochs</h5>
         <input type="number" name="epochs" min="1" step="1" value="50" required>
 

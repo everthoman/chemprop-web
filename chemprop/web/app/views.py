@@ -294,6 +294,9 @@ def train():
     patience = int(patience_raw) if patience_raw else None
     data_path = os.path.join(app.config['DATA_FOLDER'], f'{data_name}.csv')
     dataset_type = request.form.get('datasetType', 'regression')
+    split_type = request.form.get('splitType', 'random')
+    if split_type not in ('random', 'scaffold_balanced'):
+        split_type = 'random'
     id_col = request.form.get('idColumn', '').strip() or None
     if id_col and id_col not in get_header(data_path):
         warnings.append(f'Identifier column "{id_col}" not found in data — it will be ignored.')
@@ -315,6 +318,7 @@ def train():
         '--dataset_type', dataset_type,
         '--epochs', str(epochs),
         '--ensemble_size', str(ensemble_size),
+        '--split_type', split_type,
     ]
     if config_path is not None:
         train_arg_list += ['--config_path', config_path]
