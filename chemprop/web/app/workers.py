@@ -34,12 +34,16 @@ def hyperopt_worker(hyper_args_list):
     run_hyperopt(hyper_args)
 
 
-def predict_worker(arguments, smiles, result_queue):
+def predict_worker(arguments, smiles, result_queue, return_uncertainty=False):
     from chemprop.args import PredictArgs
     from chemprop.train import make_predictions
     try:
         args = PredictArgs().parse_args(arguments)
-        preds = make_predictions(args=args, smiles=smiles, return_uncertainty=False)
-        result_queue.put({'success': True, 'preds': preds})
+        if return_uncertainty:
+            preds, unc = make_predictions(args=args, smiles=smiles, return_uncertainty=True)
+            result_queue.put({'success': True, 'preds': preds, 'unc': unc})
+        else:
+            preds = make_predictions(args=args, smiles=smiles, return_uncertainty=False)
+            result_queue.put({'success': True, 'preds': preds})
     except Exception as e:
         result_queue.put({'success': False, 'error': str(e)})

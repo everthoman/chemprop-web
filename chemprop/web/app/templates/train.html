@@ -264,7 +264,7 @@
         <div id="trainStats">
         <h3>Training complete!</h3>
         {% if train_test_preds_available %}
-        <a href="{{ url_for('download_train_test_predictions') }}"><button class="btn btn-default btn-md">Download train/test predictions</button></a>
+        <a href="/checkpoint/{{ ckpt_id }}/download_predictions"><button class="btn btn-default btn-md">Download train/test predictions</button></a>
         <br><br>
         {% endif %}
         </div>

@@ -3,6 +3,7 @@
 from functools import wraps
 import csv
 import io
+import math
 import os
 import re
 import sys
@@ -259,8 +260,9 @@ def render_train(**kwargs):
         result_key = str(request.cookies.get('currentUser') or '')
         if result_key in LAST_TRAIN_RESULT:
             last = dict(LAST_TRAIN_RESULT[result_key])
-            tt_path = os.path.join(app.config['TEMP_FOLDER'], app.config['TRAIN_TEST_PREDS_FILENAME'])
-            last['train_test_preds_available'] = os.path.exists(tt_path)
+            _ckpt_id = last.get('ckpt_id')
+            _perm = os.path.join(app.config['CHECKPOINT_FOLDER'], f'{_ckpt_id}_train_test_preds.csv') if _ckpt_id else ''
+            last['train_test_preds_available'] = bool(_ckpt_id) and os.path.exists(_perm)
             kwargs = {**last, **kwargs}
 
     return render_template('train.html',
@@ -657,12 +659,13 @@ def train():
         TRAINING_MODE = ''
         PROGRESS = mp.Value('d', 0.0)
 
+    preds_perm_path = os.path.join(app.config['CHECKPOINT_FOLDER'], f'{ckpt_id}_train_test_preds.csv')
     return render_train(trained=True,
                         dataset_type=dataset_type,
                         plot_data=plot_data,
                         ckpt_id=ckpt_id,
                         val_curves=val_curves,
-                        train_test_preds_available=os.path.exists(tt_path),
+                        train_test_preds_available=os.path.exists(preds_perm_path),
                         warnings=warnings,
                         errors=errors)
 
@@ -882,11 +885,14 @@ def predict():
     train_args = load_args(model_paths[0])
 
     # Build arguments
+    use_uncertainty = len(model_paths) > 1
     arguments = [
         '--test_path', 'None',
         '--preds_path', os.path.join(app.config['TEMP_FOLDER'], app.config['PREDICTIONS_FILENAME']),
         '--checkpoint_paths', *model_paths
     ]
+    if use_uncertainty:
+        arguments += ['--uncertainty_method', 'ensemble']
 
     if gpu is not None:
         if gpu == 'None':
@@ -912,7 +918,7 @@ def predict():
 
     # Run predictions in a subprocess so they can be cancelled
     result_queue = _spawn.Queue()
-    pred_proc = _spawn.Process(target=_predict_worker, args=(arguments, smiles, result_queue))
+    pred_proc = _spawn.Process(target=_predict_worker, args=(arguments, smiles, result_queue, use_uncertainty))
     pred_proc.start()
     ACTIVE_PROCESS = pred_proc
     TRAINING = 1
@@ -936,9 +942,17 @@ def predict():
     if not result['success']:
         return render_predict(errors=[result['error']])
     preds = result['preds']
+    raw_unc = result.get('unc')
 
     if all(p is None for p in preds):
         return render_predict(errors=['All SMILES are invalid'])
+
+    # Convert per-task ensemble variance → std dev (rounded); None for invalid entries
+    def _var_to_std(row):
+        if row is None:
+            return None
+        return [round(math.sqrt(v), 3) if isinstance(v, (int, float)) and v >= 0 else None for v in row]
+    unc_std = [_var_to_std(row) for row in raw_unc] if raw_unc is not None else None
 
     # Replace invalid smiles with message
     invalid_smiles_warning = 'Invalid SMILES String'
@@ -949,12 +963,13 @@ def predict():
     device = None if (gpu is None or gpu == 'None') else torch.device(f'cuda:{gpu}')
     attribution_svgs = compute_attributions(model_paths, flat_smiles, device=device)
 
-    # Write predictions CSV with rounded values (3 d.p.)
+    # Write predictions CSV with rounded values (3 d.p.), plus std dev columns if available
     has_ids = identifiers is not None and any(i is not None for i in identifiers)
     preds_path = os.path.join(app.config['TEMP_FOLDER'], app.config['PREDICTIONS_FILENAME'])
     with open(preds_path, 'w', newline='') as f:
         writer = csv.writer(f)
-        header = (['id'] if has_ids else []) + ['smiles'] + task_names
+        std_cols = [f'std_{t}' for t in task_names] if unc_std is not None else []
+        header = (['id'] if has_ids else []) + ['smiles'] + task_names + std_cols
         writer.writerow(header)
         for idx, (smi_row, pred) in enumerate(zip(smiles, preds)):
             row = []
@@ -962,6 +977,9 @@ def predict():
                 row.append(identifiers[idx] if identifiers[idx] is not None else '')
             row.append(smi_row[0])
             row.extend([round(v, 3) if isinstance(v, float) else v for v in pred])
+            if unc_std is not None:
+                urow = unc_std[idx] if unc_std[idx] is not None else [None] * num_tasks
+                row.extend([v if v is not None else '' for v in urow])
             writer.writerow(row)
 
     return render_predict(predicted=True,
@@ -971,6 +989,7 @@ def predict():
                           task_names=task_names,
                           num_tasks=len(task_names),
                           preds=preds,
+                          unc_std=unc_std,
                           identifiers=identifiers,
                           attribution_svgs=attribution_svgs,
                           warnings=["List contains invalid SMILES strings"] if None in preds else None,
