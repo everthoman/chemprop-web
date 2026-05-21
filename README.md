@@ -87,11 +87,15 @@ When predicting with a checkpoint that has ensemble size greater than 1, each pr
 
 ---
 
+## Changes in v1.8.4
+
+- **Ensemble uncertainty** — predictions from multi-model checkpoints now show a **± std** ensemble standard deviation alongside each predicted value in the UI. All downloaded CSVs include a `std_<task>` column: the predict page CSV, the train/test predictions from the Train page, and the Download Predictions CSV from the Checkpoints modal.
+- **Download Predictions CSV from Checkpoints** — the Results modal on the Checkpoints page now includes a **Download Predictions CSV** button. The file is saved permanently alongside the checkpoint at training time and remains available after subsequent training runs.
+- **Scaffold split** — the Train page now offers a **Scaffold** split type alongside the default **Random** split. Scaffold splitting groups compounds by Bemis-Murcko scaffold and ensures no scaffold seen during training appears in the test set, giving a more honest estimate of generalisation to novel chemical space.
+- **Persistent train/test download link** — the Download train/test predictions button on the Train page now links to the permanent per-checkpoint file rather than a temporary file that is overwritten by the next training run.
+
 ## Changes in v1.8.3
 
-- **Ensemble uncertainty** — predictions from multi-model checkpoints now show a **± std** ensemble standard deviation in the UI and include `std_<task>` columns in all downloaded CSVs (predict page, train/test predictions from the Train page and Checkpoints modal).
-- **Download Predictions CSV from Checkpoints** — the Results modal on the Checkpoints page now includes a **Download Predictions CSV** button that downloads the train/test predictions for that checkpoint. The file is saved permanently alongside the checkpoint at training time, so it remains available after subsequent training runs overwrite the temporary file on the Train page.
-- **Scaffold split** — the Train page now offers a **Scaffold** split type alongside the default **Random** split. Scaffold splitting groups compounds by Bemis-Murcko scaffold and ensures no scaffold seen during training appears in the test set, giving a more honest estimate of generalisation to novel chemical space.
 - **Results modal fix** — the Results button on the Checkpoints page now opens the modal correctly. A quoting bug in the HTML (`tojson` output inside a double-quoted `onclick` attribute) caused clicks to be silently dropped; the modal also now renders outside the page container so Bootstrap z-index behaves correctly.
 - **Training completion race condition fixed** — the progress bar and live convergence chart no longer disappear when the browser is minimised and restored during training. The server-side training flag is now cleared only after results are fully prepared, so the page reloads at the right moment.
 - **Atom contribution maps in Checkpoints modal** — hovering over scatter plot points in the Results modal shows the GradCAM atom contribution heatmap, identical to the behaviour on the Train page.
