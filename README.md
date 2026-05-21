@@ -85,8 +85,8 @@ Each prediction result includes an **atom contribution map**: a 2D structure ove
 
 - **Early stopping** — optional patience parameter on the Train page; training for each ensemble member stops if the validation metric does not improve for N consecutive epochs. Disabled by default.
 - **Consistent decimal formatting** — R², Q², RMSE, and MAE always display 3 decimal places in the statistics table.
-- **Robust tab switching** — navigating away from the Train page during training and returning now reliably shows progress while training runs and automatically reloads with results when it finishes, regardless of when you switched tabs.
-- **Persistent training results on Checkpoints page** — a Results button appears next to each checkpoint trained through the web interface, opening a modal with the full validation convergence chart, statistics table, and scatter/ROC plot. Results persist across server restarts.
+- **Robust tab switching** — navigating away from the Train page during training and returning now reliably shows progress while training runs and automatically reloads with results when it finishes, regardless of when you switched tabs. Minimising and restoring the browser during training also works correctly; the page no longer reloads prematurely before results are ready.
+- **Persistent training results on Checkpoints page** — a Results button appears next to each checkpoint trained through the web interface, opening a modal with the full validation convergence chart, statistics table, and scatter/ROC plot, including hoverable atom contribution maps on regression scatter plots. Results persist across server restarts.
 
 ## Changes in v1.8.1
 
