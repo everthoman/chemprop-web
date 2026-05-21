@@ -73,7 +73,7 @@ Runs Bayesian hyperparameter optimization (TPE) to find the best model settings 
 
 Trained model checkpoints are listed on the Checkpoints page and can be downloaded as a zip file named after the checkpoint (e.g. `lipophilicity_model.zip`). Checkpoint names can be renamed inline by clicking **Rename** next to any checkpoint. All checkpoints for the current user can be removed at once with the **Delete All** button.
 
-Checkpoints trained through the web interface have a **Results** button that opens a modal with the full training results: validation convergence chart, statistics table, and scatter plot (regression) or ROC curve (classification). Hovering over scatter plot points shows the atom contribution heatmap, as on the Train page. Results are stored permanently alongside the checkpoint file and survive server restarts.
+Checkpoints trained through the web interface have a **Results** button that opens a modal with the full training results: validation convergence chart, statistics table, and scatter plot (regression) or ROC curve (classification). Hovering over scatter plot points shows the atom contribution heatmap, as on the Train page. A **Download Predictions CSV** button in the modal footer downloads the train/test predictions for that checkpoint. Results are stored permanently alongside the checkpoint file and survive server restarts.
 
 ### Predict
 
@@ -87,6 +87,7 @@ Each prediction result includes an **atom contribution map**: a 2D structure ove
 
 ## Changes in v1.8.3
 
+- **Download Predictions CSV from Checkpoints** — the Results modal on the Checkpoints page now includes a **Download Predictions CSV** button that downloads the train/test predictions for that checkpoint. The file is saved permanently alongside the checkpoint at training time, so it remains available after subsequent training runs overwrite the temporary file on the Train page.
 - **Scaffold split** — the Train page now offers a **Scaffold** split type alongside the default **Random** split. Scaffold splitting groups compounds by Bemis-Murcko scaffold and ensures no scaffold seen during training appears in the test set, giving a more honest estimate of generalisation to novel chemical space.
 - **Results modal fix** — the Results button on the Checkpoints page now opens the modal correctly. A quoting bug in the HTML (`tojson` output inside a double-quoted `onclick` attribute) caused clicks to be silently dropped; the modal also now renders outside the page container so Bootstrap z-index behaves correctly.
 - **Training completion race condition fixed** — the progress bar and live convergence chart no longer disappear when the browser is minimised and restored during training. The server-side training flag is now cleared only after results are fully prepared, so the page reloads at the right moment.
