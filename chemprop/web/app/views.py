@@ -947,11 +947,19 @@ def predict():
     if all(p is None for p in preds):
         return render_predict(errors=['All SMILES are invalid'])
 
-    # Convert per-task ensemble variance → std dev (rounded); None for invalid entries
+    # Convert per-task ensemble variance → std dev (rounded); None for invalid entries.
+    # Values may be numpy.float32 which fails isinstance(v, float), so use float() conversion.
     def _var_to_std(row):
         if row is None:
             return None
-        return [round(math.sqrt(v), 3) if isinstance(v, (int, float)) and v >= 0 else None for v in row]
+        result = []
+        for v in row:
+            try:
+                fv = float(v)
+                result.append(round(math.sqrt(fv), 3) if fv >= 0 else None)
+            except (TypeError, ValueError):
+                result.append(None)
+        return result
     unc_std = [_var_to_std(row) for row in raw_unc] if raw_unc is not None else None
 
     # Replace invalid smiles with message
