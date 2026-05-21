@@ -642,6 +642,14 @@ def train():
     except Exception as e:
         warnings.append(f'Could not save results for Checkpoints page: {str(e)}')
 
+    # Copy train/test predictions CSV to permanent storage alongside the checkpoint
+    if os.path.exists(tt_path):
+        preds_dest = os.path.join(app.config['CHECKPOINT_FOLDER'], f'{ckpt_id}_train_test_preds.csv')
+        try:
+            shutil.copy2(tt_path, preds_dest)
+        except Exception:
+            pass
+
     # Now that LAST_TRAIN_RESULT and the JSON file are ready, allow the polling
     # JS to detect training completion and reload to show results.
     if use_progress_bar:
@@ -1133,7 +1141,21 @@ def checkpoint_results(ckpt_id: int):
     results_path = os.path.join(app.config['CHECKPOINT_FOLDER'], f'{ckpt_id}_results.json')
     if not os.path.exists(results_path):
         return jsonify(error='No results saved for this checkpoint'), 404
-    return send_file(results_path, mimetype='application/json')
+    with open(results_path) as _f:
+        data = json.load(_f)
+    preds_path = os.path.join(app.config['CHECKPOINT_FOLDER'], f'{ckpt_id}_train_test_preds.csv')
+    data['has_preds_csv'] = os.path.exists(preds_path)
+    return jsonify(data)
+
+
+@app.route('/checkpoint/<int:ckpt_id>/download_predictions')
+@check_not_demo
+def download_checkpoint_predictions(ckpt_id: int):
+    """Downloads the permanent train/test predictions CSV for a checkpoint."""
+    preds_path = os.path.join(app.config['CHECKPOINT_FOLDER'], f'{ckpt_id}_train_test_preds.csv')
+    if not os.path.exists(preds_path):
+        return 'Predictions not available', 404
+    return send_file(preds_path, as_attachment=True, download_name='train_test_predictions.csv')
 
 
 @app.route('/checkpoints')

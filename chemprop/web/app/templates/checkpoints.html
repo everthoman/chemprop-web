@@ -202,6 +202,18 @@
                         if (!hasContent) {
                             body.innerHTML = '<p class="text-muted">No visualization data available for this checkpoint.</p>';
                         }
+
+                        // Add / remove Download Predictions button in the footer
+                        var footer = document.querySelector('#resultsModal .modal-footer');
+                        var oldDl = footer && footer.querySelector('.btn-download-preds');
+                        if (oldDl) oldDl.remove();
+                        if (data.has_preds_csv && footer) {
+                            var dlLink = document.createElement('a');
+                            dlLink.href = '/checkpoint/' + ckptId + '/download_predictions';
+                            dlLink.className = 'btn btn-success btn-download-preds';
+                            dlLink.textContent = 'Download Predictions CSV';
+                            footer.insertBefore(dlLink, footer.firstChild);
+                        }
                     } catch (e) {
                         body.innerHTML = '<p class="text-danger">Error rendering results: ' + e.message + '</p>';
                     }
@@ -220,6 +232,9 @@
             body.innerHTML = '';
             var tooltip = document.getElementById('struct-tooltip');
             if (tooltip) tooltip.style.display = 'none';
+            var footer = document.querySelector('#resultsModal .modal-footer');
+            var oldDl = footer && footer.querySelector('.btn-download-preds');
+            if (oldDl) oldDl.remove();
         });
     </script>
     {% endif %}
