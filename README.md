@@ -49,7 +49,7 @@ A **Cancel** button is shown during training to stop the run early. A progress b
 - **Validation convergence chart** — per-epoch validation metric (e.g. RMSE or AUC) plotted for each ensemble model, shown at the top of the results panel.
 - **Regression** — scatter plot (predicted vs experimental) with a per-task statistics table showing R² (train) / Q² (test), RMSE, and MAE for both splits.
 - **Classification** — ROC curve with a per-task statistics table (class balance, AUC, Accuracy, Precision, Recall, Specificity, F1, MCC) and a colour-coded confusion matrix (TN/FP/FN/TP), all computed on the test set at a 0.5 threshold.
-- **Download train/test predictions** — a CSV containing SMILES, split membership (train/test), experimental values, and predicted values for all compounds. Regression columns: `smiles, split, <task>, pred_<task>`; classification columns: `smiles, split, <task>, pred_prob_<task>`.
+- **Download train/test predictions** — a CSV containing SMILES, split membership (train/test), experimental values, and predicted values for all compounds. Regression columns: `smiles, split, <task>, pred_<task>`; classification columns: `smiles, split, <task>, pred_prob_<task>`. When ensemble size is greater than 1, a `std_<task>` column is also included showing the ensemble standard deviation for each prediction.
 
 Defaults: 50 epochs, ensemble size 3.
 
@@ -83,10 +83,13 @@ SMILES entered as free text can optionally include a compound identifier separat
 
 Each prediction result includes an **atom contribution map**: a 2D structure overlaid with a Gaussian heatmap showing which atoms increase (green) or decrease (red/pink) the predicted value, computed via gradient × activation (GradCAM-style) and averaged across ensemble members.
 
+When predicting with a checkpoint that has ensemble size greater than 1, each predicted value is shown with a **± std** uncertainty estimate (ensemble standard deviation) in the UI. The downloaded CSV includes a `std_<task>` column alongside each task's prediction.
+
 ---
 
 ## Changes in v1.8.3
 
+- **Ensemble uncertainty** — predictions from multi-model checkpoints now show a **± std** ensemble standard deviation in the UI and include `std_<task>` columns in all downloaded CSVs (predict page, train/test predictions from the Train page and Checkpoints modal).
 - **Download Predictions CSV from Checkpoints** — the Results modal on the Checkpoints page now includes a **Download Predictions CSV** button that downloads the train/test predictions for that checkpoint. The file is saved permanently alongside the checkpoint at training time, so it remains available after subsequent training runs overwrite the temporary file on the Train page.
 - **Scaffold split** — the Train page now offers a **Scaffold** split type alongside the default **Random** split. Scaffold splitting groups compounds by Bemis-Murcko scaffold and ensures no scaffold seen during training appears in the test set, giving a more honest estimate of generalisation to novel chemical space.
 - **Results modal fix** — the Results button on the Checkpoints page now opens the modal correctly. A quoting bug in the HTML (`tojson` output inside a double-quoted `onclick` attribute) caused clicks to be silently dropped; the modal also now renders outside the page container so Bootstrap z-index behaves correctly.
