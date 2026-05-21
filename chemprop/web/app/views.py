@@ -621,6 +621,24 @@ def train():
         warnings=warnings,
         errors=errors,
     )
+
+    # Persist results to disk so the Checkpoints page can show them permanently
+    results_path = os.path.join(app.config['CHECKPOINT_FOLDER'], f'{ckpt_id}_results.json')
+    try:
+        class _NumpyEncoder(json.JSONEncoder):
+            def default(self, obj):
+                if isinstance(obj, np.floating):
+                    return float(obj)
+                if isinstance(obj, np.integer):
+                    return int(obj)
+                if isinstance(obj, np.ndarray):
+                    return obj.tolist()
+                return super().default(obj)
+        with open(results_path, 'w') as _f:
+            json.dump({'dataset_type': dataset_type, 'plot_data': plot_data, 'val_curves': val_curves}, _f, cls=_NumpyEncoder)
+    except Exception as e:
+        warnings.append(f'Could not save results for Checkpoints page: {str(e)}')
+
     return render_train(trained=True,
                         dataset_type=dataset_type,
                         plot_data=plot_data,
@@ -1098,14 +1116,30 @@ def rename_data(dataset: int):
         return jsonify(success=False, error='That name is already in use.')
 
 
+@app.route('/checkpoint/<int:ckpt_id>/results')
+@check_not_demo
+def checkpoint_results(ckpt_id: int):
+    """Returns the saved training results JSON for a checkpoint."""
+    results_path = os.path.join(app.config['CHECKPOINT_FOLDER'], f'{ckpt_id}_results.json')
+    if not os.path.exists(results_path):
+        return jsonify(error='No results saved for this checkpoint'), 404
+    return send_file(results_path, mimetype='application/json')
+
+
 @app.route('/checkpoints')
 @check_not_demo
 def checkpoints():
     """Renders the checkpoints page."""
     checkpoint_upload_warnings, checkpoint_upload_errors = get_upload_warnings_errors('checkpoint')
+    all_ckpts = db.get_ckpts(request.cookies.get('currentUser'))
+    ckpts_with_results = {
+        ckpt['id'] for ckpt in all_ckpts
+        if os.path.exists(os.path.join(app.config['CHECKPOINT_FOLDER'], f'{ckpt["id"]}_results.json'))
+    }
 
     return render_template('checkpoints.html',
-                           checkpoints=db.get_ckpts(request.cookies.get('currentUser')),
+                           checkpoints=all_ckpts,
+                           ckpts_with_results=ckpts_with_results,
                            checkpoint_upload_warnings=checkpoint_upload_warnings,
                            checkpoint_upload_errors=checkpoint_upload_errors,
                            users=db.get_all_users())
@@ -1224,6 +1258,9 @@ def delete_checkpoint(checkpoint: int):
 
     :param checkpoint: The id of the checkpoint to delete.
     """
+    results_path = os.path.join(app.config['CHECKPOINT_FOLDER'], f'{checkpoint}_results.json')
+    if os.path.exists(results_path):
+        os.remove(results_path)
     db.delete_ckpt(checkpoint)
     return redirect(url_for('checkpoints'))
 

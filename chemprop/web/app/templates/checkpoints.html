@@ -33,6 +33,10 @@
                     <a href="{{ url_for('download_checkpoint', checkpoint=checkpoint['id']) }}">
                         <button class="btn btn-default btn-sm">Download</button>
                     </a>
+                    {% if checkpoint['id'] in ckpts_with_results %}
+                    <button class="btn btn-info btn-sm"
+                            onclick="openResultsModal({{ checkpoint['id'] }}, {{ checkpoint['ckpt_name'] | tojson }})">Results</button>
+                    {% endif %}
                     <button class="btn btn-default btn-sm btn-rename">Rename</button>
                     <button class="btn btn-primary btn-sm btn-save" style="display:none">Save</button>
                     <button class="btn btn-default btn-sm btn-cancel-rename" style="display:none">Cancel</button>
@@ -106,4 +110,95 @@
         );
         {% endfor %}
     </script>
+
+    {% if ckpts_with_results %}
+    <!-- Results modal -->
+    <div class="modal fade" id="resultsModal" tabindex="-1" role="dialog">
+        <div class="modal-dialog modal-lg" role="document" style="width:90%; max-width:900px">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <button type="button" class="close" data-dismiss="modal"><span>&times;</span></button>
+                    <h4 class="modal-title" id="resultsModalTitle">Training Results</h4>
+                </div>
+                <div class="modal-body" id="resultsModalBody" style="max-height:75vh; overflow-y:auto; padding:20px;">
+                    <p class="text-muted">Loading…</p>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-default" data-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <script src="{{ url_for('static', filename='js/train_charts.js') }}"></script>
+    <script>
+        function openResultsModal(ckptId, ckptName) {
+            var body = document.getElementById('resultsModalBody');
+            // Destroy any existing Chart.js instances before clearing the body
+            body.querySelectorAll('canvas').forEach(function(canvas) {
+                var chart = Chart.getChart(canvas);
+                if (chart) chart.destroy();
+            });
+            body.innerHTML = '<p class="text-muted">Loading…</p>';
+            document.getElementById('resultsModalTitle').textContent = ckptName + ' — Training Results';
+            $('#resultsModal').modal('show');
+
+            fetch('/checkpoint/' + ckptId + '/results')
+                .then(function(r) {
+                    if (!r.ok) throw new Error('no results');
+                    return r.json();
+                })
+                .then(function(data) {
+                    body.innerHTML = '';
+
+                    if (data.val_curves && data.val_curves.models && data.val_curves.models.length) {
+                        var cvPanel = document.createElement('div');
+                        cvPanel.style.cssText = 'max-width:500px; margin-bottom:16px';
+                        var cvH4 = document.createElement('h4');
+                        cvH4.textContent = 'Validation convergence (' + data.val_curves.metric + ')';
+                        cvPanel.appendChild(cvH4);
+                        var cvCanvas = document.createElement('canvas');
+                        cvCanvas.id = 'modal_convergenceChart';
+                        cvCanvas.style.cssText = 'max-width:500px; max-height:220px;';
+                        cvPanel.appendChild(cvCanvas);
+                        body.appendChild(cvPanel);
+                        renderConvergenceChart('modal_convergenceChart', data.val_curves);
+                    }
+
+                    if (data.plot_data && data.plot_data.length) {
+                        body.appendChild(document.createElement('hr'));
+                        data.plot_data.forEach(function(task, i) {
+                            if (data.dataset_type === 'regression') {
+                                var h4 = document.createElement('h4');
+                                h4.textContent = task.name + ': Predicted vs Experimental';
+                                body.appendChild(h4);
+                            }
+                            var statsEl = makeStatsTable(task, data.dataset_type);
+                            if (statsEl) body.appendChild(statsEl);
+                            var canvas = document.createElement('canvas');
+                            canvas.id = 'chart_' + i;
+                            canvas.style.cssText = 'max-width:500px; max-height:500px; margin-bottom:24px;';
+                            body.appendChild(canvas);
+                        });
+                        initCharts(data.plot_data, data.dataset_type, ckptId);
+                    }
+                })
+                .catch(function() {
+                    body.innerHTML = '<p class="text-danger">Could not load results.</p>';
+                });
+        }
+
+        $('#resultsModal').on('hidden.bs.modal', function() {
+            var body = document.getElementById('resultsModalBody');
+            body.querySelectorAll('canvas').forEach(function(canvas) {
+                var chart = Chart.getChart(canvas);
+                if (chart) chart.destroy();
+            });
+            body.innerHTML = '';
+            var tooltip = document.getElementById('struct-tooltip');
+            if (tooltip) tooltip.style.display = 'none';
+        });
+    </script>
+    {% endif %}
 {% endblock %}
