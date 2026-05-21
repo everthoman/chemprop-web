@@ -37,6 +37,7 @@ CURRENT_LOG_PATH = ''
 ACTIVE_PROCESS = None
 PROGRESS_BAR_PROCESS = None
 CANCELLED = False
+LAST_TRAIN_RESULT = {}  # user_key -> last successful training kwargs, served on GET after tab switch
 
 
 def _parse_val_curves(log_path):
@@ -253,6 +254,15 @@ def render_train(**kwargs):
     """Renders the train page with specified kwargs."""
     data_upload_warnings, data_upload_errors = get_upload_warnings_errors('data')
 
+    # On GET with no explicit result, serve the last training result (e.g. user switched tabs mid-training)
+    if request.method == 'GET' and 'trained' not in kwargs:
+        result_key = str(request.cookies.get('currentUser') or '')
+        if result_key in LAST_TRAIN_RESULT:
+            last = dict(LAST_TRAIN_RESULT[result_key])
+            tt_path = os.path.join(app.config['TEMP_FOLDER'], app.config['TRAIN_TEST_PREDS_FILENAME'])
+            last['train_test_preds_available'] = os.path.exists(tt_path)
+            kwargs = {**last, **kwargs}
+
     return render_template('train.html',
                            datasets=db.get_datasets(request.cookies.get('currentUser')),
                            current_user=request.cookies.get('currentUser') or '',
@@ -349,6 +359,8 @@ def train():
 
     with TemporaryDirectory() as temp_dir:
         args.save_dir = temp_dir
+
+        LAST_TRAIN_RESULT.pop(str(current_user), None)
 
         if use_progress_bar:
             pb_proc = mp.Process(target=progress_bar, args=(args, PROGRESS))
@@ -600,6 +612,15 @@ def train():
             warnings.append(f'Could not generate visualization: {str(e)}')
 
     tt_path = os.path.join(app.config['TEMP_FOLDER'], app.config['TRAIN_TEST_PREDS_FILENAME'])
+    LAST_TRAIN_RESULT[str(current_user)] = dict(
+        trained=True,
+        dataset_type=dataset_type,
+        plot_data=plot_data,
+        ckpt_id=ckpt_id,
+        val_curves=val_curves,
+        warnings=warnings,
+        errors=errors,
+    )
     return render_train(trained=True,
                         dataset_type=dataset_type,
                         plot_data=plot_data,
