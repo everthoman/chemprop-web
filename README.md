@@ -49,7 +49,7 @@ A **Cancel** button is shown during training to stop the run early. A progress b
 
 Defaults: 50 epochs, ensemble size 3.
 
-Results persist when switching tabs and are restored from session storage when you navigate back.
+Results persist when switching tabs. If you navigate away during training and return while it is still running, the progress bar resumes. When training finishes, the page reloads automatically to show the results.
 
 ### Hyperopt
 
@@ -83,6 +83,7 @@ Each prediction result includes an **atom contribution map**: a 2D structure ove
 
 - **Early stopping** — optional patience parameter on the Train page; training for each ensemble member stops if the validation metric does not improve for N consecutive epochs. Disabled by default.
 - **Consistent decimal formatting** — R², Q², RMSE, and MAE always display 3 decimal places in the statistics table.
+- **Robust tab switching** — navigating away from the Train page during training and returning now reliably shows progress while training runs and automatically reloads with results when it finishes, regardless of when you switched tabs.
 
 ## Changes in v1.8.1
 
