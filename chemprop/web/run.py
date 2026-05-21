@@ -15,8 +15,8 @@ from chemprop.web.utils import clear_temp_folder, set_root_folder
 
 
 class WebArgs(Tap):
-    host: str = '172.21.65.193'  # Host IP address
-    port: int = 5001  # Port
+    host: str = os.environ.get('CHEMPROP_HOST', '127.0.0.1')  # Host IP address (override per machine via CHEMPROP_HOST)
+    port: int = int(os.environ.get('CHEMPROP_PORT', '5000'))  # Port (override per machine via CHEMPROP_PORT)
     debug: bool = False  # Whether to run in debug mode
     demo: bool = False  # Display only demo features
     initdb: bool = False  # Initialize Database
