@@ -40,6 +40,10 @@ Upload CSV files with a header row. The first column must be SMILES; all other c
 
 Select a dataset, optionally specify an **identifier column** (a column in your CSV containing compound names or IDs — it will be excluded from targets and passed through to the download CSV), choose regression or classification, set epochs and ensemble size, and click **Train**. Optionally upload a hyperparameter config JSON (from the Hyperopt page) to train with optimized settings. Optionally set an **early stopping patience** (number of epochs without improvement before training stops for that ensemble member; disabled by default).
 
+Choose a **split type**:
+- **Random** (default) — compounds are assigned to train/test randomly (80/10/10).
+- **Scaffold** — compounds are split by Bemis-Murcko scaffold so no scaffold present in training appears in the test set. This gives a more honest estimate of generalisation to novel chemical space.
+
 A **Cancel** button is shown during training to stop the run early. A progress bar with an estimated time to completion is shown during training. A live validation convergence chart appears below the progress bar as epochs complete, showing the per-epoch validation metric for each ensemble member. After training:
 
 - **Validation convergence chart** — per-epoch validation metric (e.g. RMSE or AUC) plotted for each ensemble model, shown at the top of the results panel.
@@ -83,6 +87,7 @@ Each prediction result includes an **atom contribution map**: a 2D structure ove
 
 ## Changes in v1.8.3
 
+- **Scaffold split** — the Train page now offers a **Scaffold** split type alongside the default **Random** split. Scaffold splitting groups compounds by Bemis-Murcko scaffold and ensures no scaffold seen during training appears in the test set, giving a more honest estimate of generalisation to novel chemical space.
 - **Results modal fix** — the Results button on the Checkpoints page now opens the modal correctly. A quoting bug in the HTML (`tojson` output inside a double-quoted `onclick` attribute) caused clicks to be silently dropped; the modal also now renders outside the page container so Bootstrap z-index behaves correctly.
 - **Training completion race condition fixed** — the progress bar and live convergence chart no longer disappear when the browser is minimised and restored during training. The server-side training flag is now cleared only after results are fully prepared, so the page reloads at the right moment.
 - **Atom contribution maps in Checkpoints modal** — hovering over scatter plot points in the Results modal shows the GradCAM atom contribution heatmap, identical to the behaviour on the Train page.
