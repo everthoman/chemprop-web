@@ -69,6 +69,8 @@ Runs Bayesian hyperparameter optimization (TPE) to find the best model settings 
 
 Trained model checkpoints are listed on the Checkpoints page and can be downloaded as a zip file named after the checkpoint (e.g. `lipophilicity_model.zip`). Checkpoint names can be renamed inline by clicking **Rename** next to any checkpoint. All checkpoints for the current user can be removed at once with the **Delete All** button.
 
+Checkpoints trained through the web interface have a **Results** button that opens a modal with the full training results: validation convergence chart, statistics table, and scatter plot (regression) or ROC curve (classification). Results are stored permanently alongside the checkpoint file and survive server restarts.
+
 ### Predict
 
 Select a trained checkpoint, enter SMILES (typed, drawn, or uploaded as CSV), and click **Predict**. A **Cancel** button is shown during prediction to stop the run early. Results can be downloaded as CSV.
@@ -84,6 +86,7 @@ Each prediction result includes an **atom contribution map**: a 2D structure ove
 - **Early stopping** — optional patience parameter on the Train page; training for each ensemble member stops if the validation metric does not improve for N consecutive epochs. Disabled by default.
 - **Consistent decimal formatting** — R², Q², RMSE, and MAE always display 3 decimal places in the statistics table.
 - **Robust tab switching** — navigating away from the Train page during training and returning now reliably shows progress while training runs and automatically reloads with results when it finishes, regardless of when you switched tabs.
+- **Persistent training results on Checkpoints page** — a Results button appears next to each checkpoint trained through the web interface, opening a modal with the full validation convergence chart, statistics table, and scatter/ROC plot. Results persist across server restarts.
 
 ## Changes in v1.8.1
 
