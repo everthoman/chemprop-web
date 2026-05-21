@@ -6,7 +6,7 @@ These are accessible in a dictionary, with each line defining a key.
 import torch
 
 
-WEB_VERSION = '1.8.3'
+WEB_VERSION = '1.8.4'
 
 DEFAULT_USER_ID = 1
 
