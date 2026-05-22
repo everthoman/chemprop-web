@@ -19,7 +19,9 @@ def train_worker(train_arg_list, task_names, data_path, ignore_cols, id_col, sav
     args.task_names = task_names
     args.patience = patience
     data = get_data(path=data_path, smiles_columns=args.smiles_columns,
-                    ignore_columns=ignore_cols or None, store_row=bool(id_col))
+                    ignore_columns=ignore_cols or None, store_row=bool(id_col),
+                    features_generator=args.features_generator)
+    args.features_size = data.features_size()
     if TRAIN_LOGGER_NAME in _logging.root.manager.loggerDict:
         _logging.getLogger(TRAIN_LOGGER_NAME).handlers.clear()
         del _logging.root.manager.loggerDict[TRAIN_LOGGER_NAME]

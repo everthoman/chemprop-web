@@ -45,6 +45,16 @@
         </div>
         <br>
 
+        <h5>Additional molecule-level features <small class="text-muted">(optional)</small></h5>
+        <select name="featuresGenerator">
+            <option value="none">None</option>
+            <option value="rdkit_2d_normalized">RDKit 2D normalized (recommended)</option>
+            <option value="rdkit_2d">RDKit 2D (unnormalized)</option>
+            <option value="morgan">Morgan binary fingerprints (radius 2, 2048 bits)</option>
+            <option value="morgan_count">Morgan count fingerprints (radius 2, 2048 bits)</option>
+        </select>
+        <br>
+
         <h5>Epochs</h5>
         <input type="number" name="epochs" min="1" step="1" value="50" required>
 

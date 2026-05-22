@@ -10,7 +10,24 @@ import torch
 from rdkit import Chem
 from rdkit.Chem.Draw import rdMolDraw2D, SimilarityMaps
 
-from chemprop.utils import load_checkpoint
+from chemprop.utils import load_checkpoint, load_args
+
+
+def _plain_svg(smiles_str: str, width: int = 400, height: int = 300) -> Optional[str]:
+    """Render a plain molecule SVG with no atom highlighting."""
+    mol = Chem.MolFromSmiles(smiles_str)
+    if mol is None:
+        return None
+    try:
+        drawer = rdMolDraw2D.MolDraw2DSVG(width, height)
+        drawer.DrawMolecule(mol)
+        drawer.FinishDrawing()
+        svg = drawer.GetDrawingText()
+        if svg.startswith('<?xml'):
+            svg = svg[svg.index('<svg'):]
+        return svg
+    except Exception:
+        return None
 
 
 def _compute_atom_weights(model, smiles_str: str) -> Optional[np.ndarray]:
@@ -93,6 +110,17 @@ def compute_attributions(model_paths: List[str], smiles_list: List[str],
             svgs.append(None)
             continue
 
+        # Models trained with molecule-level features generators (rdkit_2d, morgan, etc.)
+        # can't do atom-level attribution — fall back to a plain structure SVG.
+        if model_paths:
+            try:
+                train_args = load_args(model_paths[0])
+                if train_args.features_generator is not None:
+                    svgs.append(_plain_svg(smiles_str))
+                    continue
+            except Exception:
+                pass
+
         all_weights = []
         for path in model_paths:
             try:
@@ -104,7 +132,7 @@ def compute_attributions(model_paths: List[str], smiles_list: List[str],
                 logging.getLogger(__name__).warning(f"Attribution failed for {path}: {e}")
 
         if not all_weights:
-            svgs.append(None)
+            svgs.append(_plain_svg(smiles_str))
             continue
 
         avg_weights = np.mean(all_weights, axis=0)

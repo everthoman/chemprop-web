@@ -121,23 +121,25 @@ function initCharts(plotData, datasetType, ckptId) {
         tooltip.innerHTML =
             '<div style="font:12px monospace;color:#555;margin-bottom:4px">' +
             (split === 'train' ? 'Train' : 'Test') +
-            '  |  Exp: ' + actual.toFixed(3) +
-            '  |  Pred: ' + pred.toFixed(3) + '</div>' +
+            '  |  Exp: ' + actual.toFixed(3) +
+            '  |  Pred: ' + pred.toFixed(3) + '</div>' +
             '<div style="color:#aaa;font-size:12px">Loading structure…</div>';
         tooltip.style.display = 'block';
         positionTooltip(clientX, clientY);
     }
 
-    function showSVG(clientX, clientY, actual, pred, split, smiles, svg) {
+    function showSVG(clientX, clientY, actual, pred, split, smiles, svg, hasAttribution) {
+        var legend = hasAttribution
+            ? '<div style="font-size:0.72em;color:#666;text-align:center;margin-top:2px">' +
+              '<span style="color:#2ecc71">&#9632;</span> increases  ' +
+              '<span style="color:#e74c3c">&#9632;</span> decreases prediction</div>'
+            : '';
         tooltip.innerHTML =
             '<div style="font:12px monospace;color:#555;margin-bottom:2px">' +
             (split === 'train' ? 'Train' : 'Test') +
-            '  |  Exp: ' + actual.toFixed(3) +
-            '  |  Pred: ' + pred.toFixed(3) + '</div>' +
-            svg +
-            '<div style="font-size:0.72em;color:#666;text-align:center;margin-top:2px">' +
-            '<span style="color:#2ecc71">&#9632;</span> increases  ' +
-            '<span style="color:#e74c3c">&#9632;</span> decreases prediction</div>';
+            '  |  Exp: ' + actual.toFixed(3) +
+            '  |  Pred: ' + pred.toFixed(3) + '</div>' +
+            svg + legend;
         tooltip.style.display = 'block';
         positionTooltip(clientX, clientY);
     }
@@ -161,15 +163,18 @@ function initCharts(plotData, datasetType, ckptId) {
         }
         lastKey = smiles;
         if (hoverTimer) { clearTimeout(hoverTimer); hoverTimer = null; }
-        if (svgCache[smiles]) { showSVG(cx, cy, actual, pred, split, smiles, svgCache[smiles]); return; }
+        if (svgCache[smiles]) {
+            showSVG(cx, cy, actual, pred, split, smiles, svgCache[smiles].svg, svgCache[smiles].hasAttribution);
+            return;
+        }
         showLoading(cx, cy, actual, pred, split);
         hoverTimer = setTimeout(function() {
             fetch('/get_attribution?smiles=' + encodeURIComponent(smiles) + '&ckpt_id=' + encodeURIComponent(ckptId))
                 .then(function(r) { return r.json(); })
                 .then(function(data) {
                     if (data.svg) {
-                        svgCache[smiles] = data.svg;
-                        if (lastKey === smiles) showSVG(cx, cy, actual, pred, split, smiles, data.svg);
+                        svgCache[smiles] = { svg: data.svg, hasAttribution: !!data.has_attribution };
+                        if (lastKey === smiles) showSVG(cx, cy, actual, pred, split, smiles, data.svg, !!data.has_attribution);
                     }
                 })
                 .catch(function(e) { console.warn('Attribution fetch failed:', e); });

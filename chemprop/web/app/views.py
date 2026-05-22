@@ -304,6 +304,7 @@ def train():
         warnings.append(f'Identifier column "{id_col}" not found in data — it will be ignored.')
         id_col = None
     ignore_cols = [id_col] if id_col else []
+    features_generator = request.form.get('featuresGenerator', 'none')
     use_progress_bar = request.form.get('useProgressBar', 'True') == 'True'
 
     # Handle optional hyperopt config (content sent as hidden field via FileReader)
@@ -329,6 +330,10 @@ def train():
             train_arg_list.append('--no_cuda')
         else:
             train_arg_list += ['--gpu', gpu]
+    if features_generator != 'none':
+        train_arg_list += ['--features_generator', features_generator]
+        if features_generator == 'rdkit_2d_normalized':
+            train_arg_list.append('--no_features_scaling')
     args = TrainArgs().parse_args(train_arg_list)
 
     # Get task names
@@ -466,6 +471,10 @@ def train():
                 pred_arguments.append('--no_cuda')
             elif hasattr(args, 'gpu') and args.gpu is not None:
                 pred_arguments += ['--gpu', str(args.gpu)]
+            if args.features_generator is not None:
+                pred_arguments += ['--features_generator', *args.features_generator]
+                if not args.features_scaling:
+                    pred_arguments.append('--no_features_scaling')
 
             pred_args = PredictArgs().parse_args(pred_arguments)
 
@@ -1061,11 +1070,13 @@ def get_attribution():
     model_paths = [os.path.join(app.config['CHECKPOINT_FOLDER'], f'{m["id"]}.pt') for m in models]
 
     try:
+        train_args = load_args(model_paths[0])
+        has_attribution = train_args.features_generator is None
         svgs = compute_attributions(model_paths, [smiles])
         svg = svgs[0] if svgs else None
         if svg is None:
             return jsonify({'error': 'Attribution not available'}), 400
-        return jsonify({'svg': svg})
+        return jsonify({'svg': svg, 'has_attribution': has_attribution})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
