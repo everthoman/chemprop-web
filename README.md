@@ -1,4 +1,4 @@
-# chemprop-web v1.8.4
+# chemprop-web v1.8.5
 
 A maintained fork of [Chemprop v1.7.1](https://github.com/chemprop/chemprop/tree/v1.7.1) that keeps the browser-based web interface working with modern Python and library versions.
 
@@ -39,6 +39,15 @@ Upload CSV files with a header row. The first column must be SMILES; all other c
 ### Train
 
 Select a dataset, optionally specify an **identifier column** (a column in your CSV containing compound names or IDs — it will be excluded from targets and passed through to the download CSV), choose regression or classification, set epochs and ensemble size, and click **Train**. Optionally upload a hyperparameter config JSON (from the Hyperopt page) to train with optimized settings. Optionally set an **early stopping patience** (number of epochs without improvement before training stops for that ensemble member; disabled by default).
+
+Optionally select **Additional molecule-level features** to augment the graph-based MPNN with precomputed molecular descriptors concatenated to the learned embedding before the output layer:
+- **None** (default) — MPNN graph features only.
+- **RDKit 2D normalized** (recommended) — 200 CDF-normalised RDKit physicochemical descriptors. No further feature scaling is applied. Requires `descriptastorus` (`pip install descriptastorus`).
+- **RDKit 2D** — same 200 descriptors, unnormalised; feature scaling is applied automatically.
+- **Morgan binary** — 2048-bit binary Morgan fingerprints (radius 2); feature scaling applied.
+- **Morgan count** — 2048-bit count-based Morgan fingerprints (radius 2); feature scaling applied.
+
+Features are saved with the checkpoint and applied automatically during prediction — no manual setup required at predict time. Note that atom contribution maps (hover tooltips) are not available for models trained with molecule-level features, since these descriptors have no per-atom interpretation; a plain structure is shown instead.
 
 Choose a **split type**:
 - **Random** (default) — compounds are assigned to train/test randomly (80/10/10).
@@ -86,6 +95,11 @@ Each prediction result includes an **atom contribution map**: a 2D structure ove
 When predicting with a checkpoint that has ensemble size greater than 1, each predicted value is shown with a **± std** uncertainty estimate (ensemble standard deviation) in the UI. The downloaded CSV includes a `std_<task>` column alongside each task's prediction.
 
 ---
+
+## Changes in v1.8.5
+
+- **Molecule-level features generator** — the Train page now has an **Additional molecule-level features** dropdown. Choosing `rdkit_2d_normalized`, `rdkit_2d`, `morgan`, or `morgan_count` appends precomputed descriptors or fingerprints to the MPNN embedding before the output layer. The selected generator is saved with the checkpoint and applied automatically during prediction and post-training visualisation. Requires `descriptastorus` for the RDKit 2D options (`pip install descriptastorus`).
+- **Atom attribution for features models** — models trained with molecule-level features correctly fall back to a plain structure in hover tooltips (no red/green atom colouring), since molecule-level descriptors have no per-atom interpretation. Models trained without features continue to show the GradCAM atom contribution heatmap as before.
 
 ## Changes in v1.8.4
 
