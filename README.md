@@ -1,4 +1,4 @@
-# chemprop-web v1.8.5
+# chemprop-web v1.8.6
 
 A maintained fork of [Chemprop v1.7.1](https://github.com/chemprop/chemprop/tree/v1.7.1) that keeps the browser-based web interface working with modern Python and library versions.
 
@@ -70,7 +70,7 @@ A **Cancel** button is shown during hyperopt to stop the run early.
 
 Runs Bayesian hyperparameter optimization (TPE) to find the best model settings for your dataset:
 
-1. Select a dataset and dataset type
+1. Select a dataset, optionally specify an **identifier column**, and choose a dataset type
 2. Set epochs per trial and number of trials (default: 20)
 3. Choose which parameters to search:
    - **Basic** — depth, FFN layers, dropout, hidden size *(recommended always)*
@@ -95,6 +95,11 @@ Each prediction result includes an **atom contribution map**: a 2D structure ove
 When predicting with a checkpoint that has ensemble size greater than 1, each predicted value is shown with a **± std** uncertainty estimate (ensemble standard deviation) in the UI. The downloaded CSV includes a `std_<task>` column alongside each task's prediction.
 
 ---
+
+## Changes in v1.8.6
+
+- **Target column safety catch** — the Train and Hyperopt pages now scan candidate target columns for non-numeric values before launching a run. If an undeclared identifier column (or any other non-numeric column) is detected, an inline error names the offending column and prompts the user to enter it in the **Identifier column** field or remove it from the CSV, instead of returning a generic 500 error.
+- **Identifier column on Hyperopt** — the Hyperopt page now has the same optional **Identifier column** field as Train. When set, the column is excluded from targets via `--ignore_columns` during optimization.
 
 ## Changes in v1.8.5
 
