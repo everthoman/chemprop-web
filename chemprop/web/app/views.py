@@ -41,6 +41,39 @@ CANCELLED = False
 LAST_TRAIN_RESULT = {}  # user_key -> last successful training kwargs, served on GET after tab switch
 
 
+def _find_non_numeric_columns(data_path: str, columns: List[str], sample_rows: int = 200) -> List[str]:
+    """Scan a CSV's columns and return those containing any non-numeric values.
+
+    Used to detect undeclared identifier columns before chemprop's get_data() tries
+    to call float() on them and raises a generic ValueError.
+    """
+    if not columns:
+        return []
+    bad = []
+    try:
+        with open(data_path) as f:
+            reader = csv.DictReader(f)
+            for i, row in enumerate(reader):
+                if i >= sample_rows:
+                    break
+                for col in columns:
+                    if col in bad:
+                        continue
+                    value = (row.get(col) or '').strip()
+                    if value in ('', 'nan'):
+                        continue
+                    # chemprop accepts inequality and list-encoded targets
+                    if value[0] in '<>[':
+                        continue
+                    try:
+                        float(value)
+                    except ValueError:
+                        bad.append(col)
+    except (OSError, csv.Error):
+        return []
+    return bad
+
+
 def _parse_val_curves(log_path):
     """Parse verbose.log and return per-model validation scores by epoch."""
     models = []
@@ -339,8 +372,23 @@ def train():
     # Get task names
     args.task_names = get_task_names(path=data_path, smiles_columns=args.smiles_columns, ignore_columns=ignore_cols or None)
 
+    # Safety catch: scan task columns for non-numeric values (likely an undeclared identifier column)
+    non_numeric_cols = _find_non_numeric_columns(data_path, args.task_names)
+    if non_numeric_cols:
+        cols_str = ', '.join(f'"{c}"' for c in non_numeric_cols)
+        errors.append(
+            f'Column {cols_str} contains non-numeric values and cannot be used as a target. '
+            f'If this is a compound identifier, enter its name in the "Identifier column" field above. '
+            f'Otherwise remove it from your CSV before training.'
+        )
+        return render_train(warnings=warnings, errors=errors)
+
     # Check if regression/classification selection matches data
-    data = get_data(path=data_path, smiles_columns=args.smiles_columns, ignore_columns=ignore_cols)
+    try:
+        data = get_data(path=data_path, smiles_columns=args.smiles_columns, ignore_columns=ignore_cols)
+    except ValueError as e:
+        errors.append(f'Failed to read training data: {e}')
+        return render_train(warnings=warnings, errors=errors)
 
     targets = data.targets()
     unique_targets = {target for row in targets for target in row if target is not None}
@@ -766,11 +814,33 @@ def hyperopt_page():
     dataset_type = request.form.get('datasetType', 'regression')
     gpu = request.form.get('gpu')
     search_keywords = request.form.getlist('searchKeywords') or ['basic']
+    id_col = request.form.get('idColumn', '').strip() or None
 
     data_path = os.path.join(app.config['DATA_FOLDER'], f'{data_name}.csv')
 
+    if id_col and id_col not in get_header(data_path):
+        warnings.append(f'Identifier column "{id_col}" not found in data — it will be ignored.')
+        id_col = None
+    ignore_cols = [id_col] if id_col else []
+
+    # Safety catch: scan task columns for non-numeric values (likely an undeclared identifier column)
+    task_names_preview = get_task_names(path=data_path, smiles_columns=None, ignore_columns=ignore_cols or None)
+    non_numeric_cols = _find_non_numeric_columns(data_path, task_names_preview)
+    if non_numeric_cols:
+        cols_str = ', '.join(f'"{c}"' for c in non_numeric_cols)
+        errors.append(
+            f'Column {cols_str} contains non-numeric values and cannot be used as a target. '
+            f'If this is a compound identifier, enter its name in the "Identifier column" field above. '
+            f'Otherwise remove it from your CSV before hyperopt.'
+        )
+        return render_hyperopt(warnings=warnings, errors=errors)
+
     # Validate data type
-    data = get_data(path=data_path, smiles_columns=None)
+    try:
+        data = get_data(path=data_path, smiles_columns=None, ignore_columns=ignore_cols or None)
+    except ValueError as e:
+        errors.append(f'Failed to read training data: {e}')
+        return render_hyperopt(warnings=warnings, errors=errors)
     targets = data.targets()
     unique_targets = {target for row in targets for target in row if target is not None}
 
@@ -796,6 +866,8 @@ def hyperopt_page():
             '--save_dir', hyperopt_save_dir,
             '--search_parameter_keywords', *search_keywords,
         ]
+        if ignore_cols:
+            hyper_args_list += ['--ignore_columns', *ignore_cols]
 
         if gpu is not None:
             if gpu == 'None':
