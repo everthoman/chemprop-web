@@ -164,6 +164,19 @@
         <br>
         <br>
 
+        {% if applicability %}
+            <div class="alert alert-info" style="font-size:0.9em;">
+                <strong>Applicability domain.</strong> Each prediction is flagged
+                <span class="label label-success">Within domain</span> or
+                <span class="label label-warning">Outside domain</span> based on how
+                closely the molecule resembles the model's training set (Tanimoto
+                similarity of Morgan fingerprints to the nearest training molecule).
+                The in-domain cutoff ({{ ad_threshold }}) is derived from the training
+                set's own similarity distribution. Predictions outside the domain are
+                extrapolations and should be treated with extra caution.
+            </div>
+        {% endif %}
+
         {% for i in range(num_smiles) %}
             <div style="display:flex; align-items:flex-start; gap:24px; flex-wrap:wrap;">
                 {% if attribution_svgs and attribution_svgs[i] %}
@@ -183,6 +196,19 @@
                     {% for j in range(num_tasks) %}
                         <p><strong>{{ task_names[j] }}:</strong> {{ preds[i][j] | round(3) if preds[i][j] is number else preds[i][j] }}{% if unc_std and unc_std[i] is not none and unc_std[i][j] is not none %} <span class="text-muted">± {{ unc_std[i][j] }}</span>{% endif %}</p>
                     {% endfor %}
+                    {% if applicability and applicability[i] is not none %}
+                        <p>
+                            <strong>Applicability domain:</strong>
+                            {% if applicability[i].in_domain %}
+                                <span class="label label-success">Within domain</span>
+                            {% else %}
+                                <span class="label label-warning">Outside domain</span>
+                            {% endif %}
+                            <span class="text-muted" title="Tanimoto similarity to the nearest training-set molecule (in-domain cutoff {{ ad_threshold }})">
+                                (nearest-neighbour similarity {{ applicability[i].similarity }})
+                            </span>
+                        </p>
+                    {% endif %}
                 </div>
             </div>
 

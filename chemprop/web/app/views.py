@@ -30,6 +30,7 @@ from chemprop.data import get_data, get_header, get_smiles, get_task_names, vali
 from chemprop.train import make_predictions, run_training
 from chemprop.utils import create_logger, load_task_names, load_args
 from chemprop.web.app.atom_attribution import compute_attributions
+from chemprop.web.app.applicability import ApplicabilityDomain, load_training_smiles
 
 TRAINING = 0
 TRAINING_MODE = ''  # 'train', 'hyperopt', or 'predict'
@@ -1093,13 +1094,30 @@ def predict():
     device = None if (gpu is None or gpu == 'None') else torch.device(f'cuda:{gpu}')
     attribution_svgs = compute_attributions(model_paths, flat_smiles, device=device)
 
+    # Estimate the applicability domain of each prediction by comparing every
+    # query molecule to the model's training set (best-effort; needs the saved
+    # train/test predictions CSV that records the training SMILES).
+    applicability = None
+    ad_threshold = None
+    try:
+        train_preds_path = os.path.join(app.config['CHECKPOINT_FOLDER'], f'{ckpt_id}_train_test_preds.csv')
+        train_smiles = load_training_smiles(train_preds_path)
+        if train_smiles:
+            ad = ApplicabilityDomain.from_training_smiles(train_smiles)
+            if ad is not None:
+                applicability = ad.score_all([s[0] for s in smiles])
+                ad_threshold = ad.threshold
+    except Exception:
+        applicability = None
+
     # Write predictions CSV with rounded values (3 d.p.), plus std dev columns if available
     has_ids = identifiers is not None and any(i is not None for i in identifiers)
     preds_path = os.path.join(app.config['TEMP_FOLDER'], app.config['PREDICTIONS_FILENAME'])
     with open(preds_path, 'w', newline='') as f:
         writer = csv.writer(f)
         std_cols = [f'std_{t}' for t in task_names] if unc_std is not None else []
-        header = (['id'] if has_ids else []) + ['smiles'] + task_names + std_cols
+        ad_cols = ['ad_similarity', 'ad_in_domain'] if applicability is not None else []
+        header = (['id'] if has_ids else []) + ['smiles'] + task_names + std_cols + ad_cols
         writer.writerow(header)
         for idx, (smi_row, pred) in enumerate(zip(smiles, preds)):
             row = []
@@ -1110,6 +1128,12 @@ def predict():
             if unc_std is not None:
                 urow = unc_std[idx] if unc_std[idx] is not None else [None] * num_tasks
                 row.extend([v if v is not None else '' for v in urow])
+            if applicability is not None:
+                ad = applicability[idx]
+                if ad is not None:
+                    row.extend([ad['similarity'], 'yes' if ad['in_domain'] else 'no'])
+                else:
+                    row.extend(['', ''])
             writer.writerow(row)
 
     return render_predict(predicted=True,
@@ -1121,6 +1145,8 @@ def predict():
                           preds=preds,
                           unc_std=unc_std,
                           identifiers=identifiers,
+                          applicability=applicability,
+                          ad_threshold=round(ad_threshold, 3) if ad_threshold is not None else None,
                           attribution_svgs=attribution_svgs,
                           warnings=["List contains invalid SMILES strings"] if None in preds else None,
                           errors=["No SMILES strings given"] if len(preds) == 0 else None)

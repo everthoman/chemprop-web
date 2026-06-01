@@ -1,4 +1,4 @@
-# chemprop-web v1.8.6
+# chemprop-web v1.8.7
 
 A maintained fork of [Chemprop v1.7.1](https://github.com/chemprop/chemprop/tree/v1.7.1) that keeps the browser-based web interface working with modern Python and library versions.
 
@@ -94,7 +94,13 @@ Each prediction result includes an **atom contribution map**: a 2D structure ove
 
 When predicting with a checkpoint that has ensemble size greater than 1, each predicted value is shown with a **± std** uncertainty estimate (ensemble standard deviation) in the UI. The downloaded CSV includes a `std_<task>` column alongside each task's prediction.
 
+Each prediction also carries an **applicability domain** flag indicating whether the molecule resembles the model's training set. For every query molecule the nearest training-set neighbour is found by Tanimoto similarity of 2048-bit Morgan fingerprints (ECFP4); the molecule is labelled **Within domain** or **Outside domain** depending on whether that similarity meets a data-driven cutoff derived from the training set's own nearest-neighbour similarity distribution (5th percentile). A tightly clustered training set produces a stricter cutoff than a chemically diverse one. The UI shows the label plus the nearest-neighbour similarity, and the downloaded CSV adds `ad_similarity` and `ad_in_domain` columns. Predictions flagged *Outside domain* are extrapolations and should be treated with extra caution, independent of the ensemble uncertainty. The flag requires the saved train/test predictions CSV (produced by training in this app) to recover the training SMILES, so checkpoints uploaded without it show no applicability domain.
+
 ---
+
+## Changes in v1.8.7
+
+- **Applicability domain for predictions** — each prediction on the Predict page is now flagged **Within domain** or **Outside domain** based on its Tanimoto similarity (Morgan/ECFP4 fingerprints) to the nearest molecule in the model's training set. The in-/out-of-domain cutoff is derived per-model from the training set's own nearest-neighbour similarity distribution rather than a fixed constant. The downloaded predictions CSV gains `ad_similarity` and `ad_in_domain` columns. Applicability is computed best-effort and only when the checkpoint's saved train/test predictions CSV is available to supply the training SMILES.
 
 ## Changes in v1.8.6
 
