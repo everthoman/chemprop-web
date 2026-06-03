@@ -14,13 +14,13 @@ from typing import Callable, List, Optional, Tuple
 import multiprocessing as mp
 import zipfile
 
-from flask import json, jsonify, redirect, render_template, request, send_file, send_from_directory, url_for
+from flask import json, jsonify, redirect, render_template, request, send_file, send_from_directory, session, url_for
 import numpy as np
 from rdkit import Chem
 import torch
 from werkzeug.utils import secure_filename
 
-from chemprop.web.app import app, db
+from chemprop.web.app import app, auth, db
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__)))))
 
@@ -128,6 +128,18 @@ def inject_version():
     return {'web_version': app.config['WEB_VERSION']}
 
 
+def is_admin() -> bool:
+    """Whether the logged-in user has admin rights (e.g. creating users)."""
+    username = (session.get('username') or '').lower()
+    return username in app.config.get('ADMIN_USERS', [])
+
+
+@app.context_processor
+def inject_is_admin():
+    """Exposes ``is_admin`` to templates so admin-only UI can be hidden."""
+    return {'is_admin': is_admin()}
+
+
 def check_not_demo(func: Callable) -> Callable:
     """
     View wrapper, which will redirect request to site
@@ -138,6 +150,17 @@ def check_not_demo(func: Callable) -> Callable:
     @wraps(func)
     def decorated_function(*args, **kwargs):
         if app.config['DEMO']:
+            return redirect(url_for('home'))
+        return func(*args, **kwargs)
+
+    return decorated_function
+
+
+def check_admin(func: Callable) -> Callable:
+    """View wrapper that redirects non-admin users to the homepage."""
+    @wraps(func)
+    def decorated_function(*args, **kwargs):
+        if not is_admin():
             return redirect(url_for('home'))
         return func(*args, **kwargs)
 
@@ -261,6 +284,63 @@ def cancel():
     return jsonify(success=True)
 
 
+# Endpoints reachable without being logged in.
+PUBLIC_ENDPOINTS = {'login', 'static'}
+
+
+def current_user_id() -> Optional[int]:
+    """The authenticated user's id, read from the signed session.
+
+    This replaces the legacy ``currentUser`` cookie as the source of identity,
+    so a client can no longer reach another user's data by editing a cookie.
+    """
+    return session.get('user_id')
+
+
+@app.before_request
+def require_login():
+    """Redirects unauthenticated requests to the login page.
+
+    Skipped in DEMO mode, which exposes no per-user accounts, and for the
+    login page and static assets.
+    """
+    if app.config.get('DEMO'):
+        return None
+
+    if request.endpoint in PUBLIC_ENDPOINTS or session.get('user_id') is not None:
+        return None
+
+    return redirect(url_for('login'))
+
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    """Authenticates a user against the file-based credential store."""
+    if app.config.get('DEMO'):
+        return redirect(url_for('home'))
+
+    if request.method == 'GET':
+        return render_template('login.html')
+
+    username = request.form.get('username', '').strip()
+    password = request.form.get('password', '')
+
+    if auth.verify_password(username, password):
+        session.clear()
+        session['user_id'] = db.get_or_create_user(username)
+        session['username'] = username
+        return redirect(url_for('home'))
+
+    return render_template('login.html', error='Invalid username or password.')
+
+
+@app.route('/logout')
+def logout():
+    """Logs the current user out by clearing their session."""
+    session.clear()
+    return redirect(url_for('login'))
+
+
 @app.route('/')
 def home():
     """Renders the home page."""
@@ -269,6 +349,7 @@ def home():
 
 @app.route('/create_user', methods=['GET', 'POST'])
 @check_not_demo
+@check_admin
 def create_user():
     """
     If a POST request is made, creates a new user.
@@ -277,12 +358,22 @@ def create_user():
     if request.method == 'GET':
         return render_template('create_user.html', users=db.get_all_users())
 
-    new_name = request.form['newUserName']
+    new_name = request.form.get('newUserName', '').strip()
+    password = request.form.get('password', '')
 
-    if new_name is not None:
-        db.insert_user(new_name)
+    if not new_name or not password:
+        return render_template('create_user.html', users=db.get_all_users(),
+                               error='Both a username and a password are required.')
 
-    return redirect(url_for('create_user'))
+    if auth.user_exists(new_name):
+        return render_template('create_user.html', users=db.get_all_users(),
+                               error=f'A user named "{new_name}" already exists.')
+
+    auth.set_password(new_name, password)
+    db.get_or_create_user(new_name)
+
+    return render_template('create_user.html', users=db.get_all_users(),
+                           message=f'Created user "{new_name}".')
 
 
 def render_train(**kwargs):
@@ -291,7 +382,7 @@ def render_train(**kwargs):
 
     # On GET with no explicit result, serve the last training result (e.g. user switched tabs mid-training)
     if request.method == 'GET' and 'trained' not in kwargs:
-        result_key = str(request.cookies.get('currentUser') or '')
+        result_key = str(current_user_id() or '')
         if result_key in LAST_TRAIN_RESULT:
             last = dict(LAST_TRAIN_RESULT[result_key])
             _ckpt_id = last.get('ckpt_id')
@@ -300,8 +391,8 @@ def render_train(**kwargs):
             kwargs = {**last, **kwargs}
 
     return render_template('train.html',
-                           datasets=db.get_datasets(request.cookies.get('currentUser')),
-                           current_user=request.cookies.get('currentUser') or '',
+                           datasets=db.get_datasets(current_user_id()),
+                           current_user=current_user_id() or '',
                            cuda=app.config['CUDA'],
                            gpus=app.config['GPUS'],
                            data_upload_warnings=data_upload_warnings,
@@ -404,7 +495,7 @@ def train():
 
         return render_train(warnings=warnings, errors=errors)
 
-    current_user = request.cookies.get('currentUser')
+    current_user = current_user_id()
 
     if not current_user:
         # Use DEFAULT as current user if the client's cookie is not set.
@@ -788,7 +879,7 @@ def render_hyperopt(**kwargs):
     """Renders the hyperopt page with specified kwargs."""
     data_upload_warnings, data_upload_errors = get_upload_warnings_errors('data')
     return render_template('hyperopt.html',
-                           datasets=db.get_datasets(request.cookies.get('currentUser')),
+                           datasets=db.get_datasets(current_user_id()),
                            cuda=app.config['CUDA'],
                            gpus=app.config['GPUS'],
                            data_upload_warnings=data_upload_warnings,
@@ -958,7 +1049,7 @@ def render_predict(**kwargs):
     checkpoint_upload_warnings, checkpoint_upload_errors = get_upload_warnings_errors('checkpoint')
 
     return render_template('predict.html',
-                           checkpoints=db.get_ckpts(request.cookies.get('currentUser')),
+                           checkpoints=db.get_ckpts(current_user_id()),
                            cuda=app.config['CUDA'],
                            gpus=app.config['GPUS'],
                            checkpoint_upload_warnings=checkpoint_upload_warnings,
@@ -1208,7 +1299,7 @@ def data():
     data_upload_warnings, data_upload_errors = get_upload_warnings_errors('data')
 
     return render_template('data.html',
-                           datasets=db.get_datasets(request.cookies.get('currentUser')),
+                           datasets=db.get_datasets(current_user_id()),
                            data_upload_warnings=data_upload_warnings,
                            data_upload_errors=data_upload_errors,
                            users=db.get_all_users())
@@ -1224,7 +1315,7 @@ def upload_data(return_page: str):
     """
     warnings, errors = [], []
 
-    current_user = request.cookies.get('currentUser')
+    current_user = current_user_id()
 
     if not current_user:
         # Use DEFAULT as current user if the client's cookie is not set.
@@ -1288,7 +1379,7 @@ def delete_data(dataset: int):
 @check_not_demo
 def delete_all_data():
     """Deletes all datasets belonging to the current user."""
-    current_user = request.cookies.get('currentUser') or app.config['DEFAULT_USER_ID']
+    current_user = current_user_id() or app.config['DEFAULT_USER_ID']
     datasets = db.get_datasets(current_user)
     for dataset in datasets:
         db.delete_dataset(dataset['id'])
@@ -1340,7 +1431,7 @@ def download_checkpoint_predictions(ckpt_id: int):
 def checkpoints():
     """Renders the checkpoints page."""
     checkpoint_upload_warnings, checkpoint_upload_errors = get_upload_warnings_errors('checkpoint')
-    all_ckpts = db.get_ckpts(request.cookies.get('currentUser'))
+    all_ckpts = db.get_ckpts(current_user_id())
     ckpts_with_results = {
         ckpt['id'] for ckpt in all_ckpts
         if os.path.exists(os.path.join(app.config['CHECKPOINT_FOLDER'], f'{ckpt["id"]}_results.json'))
@@ -1364,7 +1455,7 @@ def upload_checkpoint(return_page: str):
     """
     warnings, errors = [], []
 
-    current_user = request.cookies.get('currentUser')
+    current_user = current_user_id()
 
     if not current_user:
         # Use DEFAULT as current user if the client's cookie is not set.
@@ -1478,7 +1569,7 @@ def delete_checkpoint(checkpoint: int):
 @check_not_demo
 def delete_all_checkpoints():
     """Deletes all checkpoints belonging to the current user."""
-    current_user = request.cookies.get('currentUser') or app.config['DEFAULT_USER_ID']
+    current_user = current_user_id() or app.config['DEFAULT_USER_ID']
     ckpts = db.get_ckpts(current_user)
     for ckpt in ckpts:
         db.delete_ckpt(ckpt['id'])

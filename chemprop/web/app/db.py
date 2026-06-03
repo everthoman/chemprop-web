@@ -91,33 +91,38 @@ def get_all_users() -> Dict[int, Dict[str, Any]]:
     return {row['id']: {"username": row['username'], "preferences": row['preferences']} for row in rows} if rows else {}
 
 
-def insert_user(username: str) -> Tuple[int, str]:
+def get_user_id(username: str) -> Optional[int]:
     """
-    Inserts a new user. If the desired username is already taken,
-    appends integers incrementally until an open name is found.
+    Returns the id of the user with the exact given username, or None if absent.
 
-    :param username: The desired username for the new user.
-    :return A tuple containing the id and name of the new user.
+    :param username: The username to look up.
+    :return The user's id, or None.
     """
+    row = query_db('SELECT id FROM user WHERE username = ?', (username,), one=True)
+
+    return row['id'] if row else None
+
+
+def get_or_create_user(username: str) -> int:
+    """
+    Returns the id of the user with the exact given username, creating the user
+    if it does not yet exist. The username is never altered, so it can be used to
+    map an authenticated username to its id.
+
+    :param username: The username to look up or create.
+    :return The user's id.
+    """
+    user_id = get_user_id(username)
+    if user_id is not None:
+        return user_id
+
     db = get_db()
-
-    new_user_id = None
-    count = 0
-    while new_user_id is None:
-        temp_name = username
-
-        if count != 0:
-            temp_name += str(count)
-        try:
-            cur = db.execute('INSERT INTO user (username) VALUES (?)', [temp_name])
-            new_user_id = cur.lastrowid
-        except sqlite3.IntegrityError:
-            count += 1
-
+    cur = db.execute('INSERT INTO user (username) VALUES (?)', [username])
+    user_id = cur.lastrowid
     db.commit()
     cur.close()
 
-    return new_user_id, temp_name
+    return user_id
 
 
 def get_ckpts(user_id: int) -> List[sqlite3.Row]:

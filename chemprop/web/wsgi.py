@@ -2,7 +2,7 @@
 Runs the web interface version of Chemprop.
 Designed to be used for production only, along with Gunicorn.
 """
-from chemprop.web.app import app, db
+from chemprop.web.app import app, auth, db
 from chemprop.web.utils import clear_temp_folder, set_root_folder
 
 
@@ -13,6 +13,7 @@ def build_app(*args, **kwargs):
         root_folder=kwargs.get('root_folder', None),
         create_folders=True
     )
+    app.secret_key = auth.load_or_create_secret_key(app.config['SECRET_KEY_PATH'])
     clear_temp_folder(app=app)
 
     db.init_app(app)

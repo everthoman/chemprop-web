@@ -41,17 +41,13 @@
             <li><a href="{{ url_for('checkpoints') }}">Checkpoints</a></li>
             {% endif %}
         </ul>
-        {% if not config['DEMO'] %}
+        {% if not config['DEMO'] and session.get('user_id') %}
         <ul class="nav navbar-nav navbar-right">
-            <li class="dropdown">
-                <a href="#" id="currentUser" class="dropdown-toggle" data-toggle="dropdown" role="button" aria-haspopup="true" aria-expanded="false"> <span class="caret"></span></a>
-                <ul class="dropdown-menu" id="userSelect">
-                    {% for id, user in users.items() %}
-                        <li id="select{{ id }}"><a value="{{ id }}" href="#" class="userSelect">{{ user.username }}</a></li>
-                    {% endfor %}
-                </ul>
-            </li>
+            {% if is_admin %}
             <li><a href="{{ url_for('create_user') }}">Create User</a></li>
+            {% endif %}
+            <li><p class="navbar-text">Signed in as <strong>{{ session.get('username') }}</strong></p></li>
+            <li><a href="{{ url_for('logout') }}">Log Out</a></li>
         </ul>
         {% endif %}
     </div>
@@ -74,25 +70,4 @@
 </div>
 
 </body>
-{% if not config['DEMO'] %}
-<script>
-    let users = {{ users | tojson }};
-    let currentUser = Cookies.get("currentUser");
-
-    if (currentUser === undefined || !(currentUser in users)) {
-        currentUser = 1;
-        Cookies.set("currentUser", currentUser);
-    }
-
-    $('#currentUser').prepend(users[currentUser].username);
-    $('#select' + currentUser).css('display', 'none');
-
-    $(".userSelect").click(function() {
-        Cookies.set("currentUser", $(this).attr('value'));
-        location.reload();
-    });
-    </script>
-
-</script>
-{% endif %}
 </html>

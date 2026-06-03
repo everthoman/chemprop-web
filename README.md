@@ -26,11 +26,31 @@ chemprop_web
 
 Then open `http://localhost:5001` in your browser. Use `--host` and `--port` to change the address.
 
+The web app is password-protected (see [User accounts](#user-accounts) below). Before the first launch, create an account:
+
+```bash
+chemprop_web --set_password alice   # prompts for a password, then exits
+```
+
 ---
 
 ## Web interface
 
 The web app supports the full training and prediction workflow through a browser:
+
+### User accounts
+
+The app requires a login. Each user's datasets and checkpoints are private to that account, and the logged-in identity is held in a signed session cookie rather than the client-editable cookie used previously — a user can no longer reach another user's data by editing a cookie.
+
+Credentials are stored **without a database**, in a JSON file (`users_auth.json` in the root folder) mapping each username to a salted password hash (Werkzeug/PBKDF2). Sessions are signed with a key read from the `CHEMPROP_SECRET_KEY` environment variable, or auto-generated and persisted to `.flask_secret_key` on first run so logins survive restarts.
+
+- **Create the first account** from the command line: `chemprop_web --set_password <username>` prompts for a password (and confirmation), writes the hashed credential, and exits without starting the server. Re-run it to change an existing user's password.
+- **Add more users** from the running app via the **Create User** page (username + password). This is an **admin-only** action — the page and its navbar link are restricted to admin users. Non-admins are redirected to the home page.
+- **Log out** with the link in the top-right navbar, which shows the signed-in username.
+
+**Admin rights.** By default the single user `evehom` is the admin. The admin list is configurable (case-insensitive) via the `CHEMPROP_ADMIN_USERS` environment variable — a comma-separated list of usernames, e.g. `CHEMPROP_ADMIN_USERS=alice,bob`. The `--set_password` CLI is always available to anyone with server shell access regardless of the admin list.
+
+Demo mode (`--demo`) exposes no accounts and is not password-protected.
 
 ### Data
 
@@ -100,6 +120,7 @@ Each prediction also carries an **applicability domain** flag indicating whether
 
 ## Changes in v1.8.7
 
+- **Password-protected user accounts (no database)** — the web app now requires a login. Per-user credentials are stored as salted password hashes in a JSON file (`users_auth.json`), not in a database; sessions are signed with a persisted secret key (or `CHEMPROP_SECRET_KEY`). The logged-in identity now comes from the signed session instead of the previously client-editable `currentUser` cookie, so users can no longer reach another account's data by editing a cookie. Bootstrap the first account with `chemprop_web --set_password <username>`; creating further users from the **Create User** page is restricted to admins (the user `evehom` by default, overridable via `CHEMPROP_ADMIN_USERS`). Demo mode remains open and unauthenticated.
 - **Applicability domain for predictions** — each prediction on the Predict page is now flagged **Within domain** or **Outside domain** based on its Tanimoto similarity (Morgan/ECFP4 fingerprints) to the nearest molecule in the model's training set. The in-/out-of-domain cutoff is derived per-model from the training set's own nearest-neighbour similarity distribution rather than a fixed constant. The downloaded predictions CSV gains `ad_similarity` and `ad_in_domain` columns. Applicability is computed best-effort and only when the checkpoint's saved train/test predictions CSV is available to supply the training SMILES.
 
 ## Changes in v1.8.6
