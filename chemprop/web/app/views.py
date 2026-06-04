@@ -215,6 +215,10 @@ def _compute_train_visualization(ckpt_id, model_paths, data_path, id_col, ignore
             '--test_path', 'None',
             '--preds_path', os.path.join(app.config['TEMP_FOLDER'], 'train_plot_preds.csv'),
             '--checkpoint_paths', *model_paths,
+            # This runs in a background thread; chemprop's default of 8 DataLoader
+            # worker *processes* cannot be spawned reliably from a non-main thread
+            # (BrokenPipe/hangs), so load data inline.
+            '--num_workers', '0',
         ]
         if _use_unc:
             pred_arguments += ['--uncertainty_method', 'ensemble']
@@ -450,6 +454,8 @@ def _compute_train_visualization(ckpt_id, model_paths, data_path, id_col, ignore
                     '--calibration_path', cal_path,
                     '--calibration_method', cal_method,
                     '--conformal_alpha', str(conformal_alpha),
+                    # See note above: avoid worker-process DataLoader in this thread.
+                    '--num_workers', '0',
                 ]
                 if not args.cuda:
                     conf_arguments.append('--no_cuda')
