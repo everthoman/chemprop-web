@@ -291,12 +291,12 @@ def run_training(args: TrainArgs,
         # Run training
         best_score = float('inf') if args.minimize_score else -float('inf')
         best_epoch, n_iter = 0, 0
-        # Early-stopping reference: the patience counter only resets when an epoch
-        # improves on this reference by more than `min_delta`, so tiny (noise-level)
-        # gains do not keep training alive. `best_score`/`best_epoch` above still
-        # track the strict best for checkpoint saving.
-        es_ref_score = best_score
-        epochs_no_progress = 0
+        # Early-stopping window: validation scores of recent epochs. Training stops
+        # once the last `patience` scores all fall within a `min_delta` band, i.e.
+        # the curve has flattened — a model still fluctuating by more than min_delta
+        # keeps training. `best_score`/`best_epoch` above still track the strict best
+        # for checkpoint saving, so the best epoch is kept regardless of where it stops.
+        recent_val_scores = []
         for epoch in trange(args.epochs):
             debug(f'Epoch {epoch}')
             n_iter = train(
@@ -363,19 +363,15 @@ def run_training(args: TrainArgs,
             patience = getattr(args, 'patience', None)
             if patience:
                 min_delta = getattr(args, 'min_delta', 0.0) or 0.0
-                # An epoch counts as progress only if it beats the running reference
-                # by more than min_delta; otherwise the no-progress counter advances.
-                significant = (args.minimize_score and mean_val_score < es_ref_score - min_delta) or \
-                              (not args.minimize_score and mean_val_score > es_ref_score + min_delta)
-                if significant:
-                    es_ref_score = mean_val_score
-                    epochs_no_progress = 0
-                else:
-                    epochs_no_progress += 1
-                    if epochs_no_progress >= patience:
-                        info(f'Early stopping: validation {args.metric} did not improve by more than '
-                             f'{min_delta:g} for {patience} epochs (best epoch {best_epoch})')
-                        break
+                # Stop only once the validation metric has flattened: the last
+                # `patience` scores all lie within a min_delta band. While the curve
+                # still swings by more than min_delta, training continues.
+                recent_val_scores.append(mean_val_score)
+                window = recent_val_scores[-patience:]
+                if len(window) >= patience and (max(window) - min(window)) <= min_delta:
+                    info(f'Early stopping: validation {args.metric} stayed within {min_delta:g} '
+                         f'over the last {patience} epochs (best epoch {best_epoch})')
+                    break
 
         # Evaluate on test set using model with best validation score
         info(f'Model {model_idx} best validation {args.metric} = {best_score:.6f} on epoch {best_epoch}')
