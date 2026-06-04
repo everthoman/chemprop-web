@@ -58,8 +58,8 @@
         <h5>Epochs</h5>
         <input type="number" name="epochs" min="1" step="1" value="50" required>
 
-        <h5>Early stopping patience <small class="text-muted">(optional — stop if no improvement for N epochs)</small></h5>
-        <input type="number" name="patience" min="1" step="1" placeholder="disabled">
+        <h5>Early stopping patience <small class="text-muted">(optional — stop if no improvement for N epochs; 0 or blank disables)</small></h5>
+        <input type="number" name="patience" min="0" step="1" placeholder="disabled">
 
         <h5>Ensemble Size</h5>
         <select name="ensembleSize" required>

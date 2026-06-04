@@ -453,7 +453,9 @@ def train():
         int(request.form['ensembleSize']), request.form['checkpointName']
     gpu = request.form.get('gpu')
     patience_raw = request.form.get('patience', '').strip()
-    patience = int(patience_raw) if patience_raw else None
+    # Blank or 0 disables early stopping; 0 is the sentinel the spinner can step
+    # down to, so the field can always be returned to "disabled".
+    patience = int(patience_raw) if patience_raw and int(patience_raw) > 0 else None
     data_path = os.path.join(app.config['DATA_FOLDER'], f'{data_name}.csv')
     dataset_type = request.form.get('datasetType', 'regression')
     split_type = request.form.get('splitType', 'random')
