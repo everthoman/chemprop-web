@@ -342,6 +342,34 @@
         </script>
         {% endif %}
 
+        {% if viz_pending %}
+        <style>
+            .cp-spinner { display:inline-block; width:14px; height:14px; border:2px solid #bbb;
+                          border-top-color:#337ab7; border-radius:50%; animation:cp-spin 0.8s linear infinite;
+                          vertical-align:middle; margin-right:6px; }
+            @keyframes cp-spin { to { transform: rotate(360deg); } }
+        </style>
+        <div id="vizPending" class="alert alert-info" style="max-width:560px;">
+            <span class="cp-spinner"></span> Generating plots and metrics…
+            <small class="text-muted">The model is already saved and ready to use on the Predict page; the scatter/ROC and conformal report will appear here when ready.</small>
+        </div>
+        <script>
+            (function() {
+                var ckptId = {{ ckpt_id | tojson }};
+                function poll() {
+                    $.getJSON('/checkpoint/' + ckptId + '/results', function(data) {
+                        if (data && data.viz_status && data.viz_status !== 'pending') {
+                            window.location.reload();
+                        } else {
+                            setTimeout(poll, 1500);
+                        }
+                    }).fail(function() { setTimeout(poll, 2000); });
+                }
+                setTimeout(poll, 1500);
+            })();
+        </script>
+        {% endif %}
+
         {% if conformal and conformal.enabled %}
         <hr>
         <div id="conformalPanel" style="margin-bottom:16px">

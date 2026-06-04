@@ -9,6 +9,7 @@ import re
 import sys
 import shutil
 from tempfile import TemporaryDirectory, NamedTemporaryFile
+import threading
 import time
 from typing import Callable, List, Optional, Tuple
 import multiprocessing as mp
@@ -156,6 +157,396 @@ def conformal_calibration_feasible(n_cal: int, alpha: float) -> bool:
     the calibration scores; it must be <= 1 for the quantile to be well defined.
     """
     return n_cal >= 1 and math.ceil((n_cal + 1) * (1 - alpha)) <= n_cal
+
+
+class _NumpyEncoder(json.JSONEncoder):
+    """JSON encoder that understands numpy scalar/array types."""
+    def default(self, obj):
+        if isinstance(obj, np.floating):
+            return float(obj)
+        if isinstance(obj, np.integer):
+            return int(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return super().default(obj)
+
+
+def _results_path(ckpt_id) -> str:
+    return os.path.join(app.config['CHECKPOINT_FOLDER'], f'{ckpt_id}_results.json')
+
+
+def _write_results_json(ckpt_id, data: dict) -> None:
+    """Persist a checkpoint's results JSON (used by the Checkpoints page and the
+    Train page's deferred-results poll). ``viz_status`` is one of pending/done/error."""
+    with open(_results_path(ckpt_id), 'w') as f:
+        json.dump(data, f, cls=_NumpyEncoder)
+
+
+def _compute_train_visualization(ckpt_id, model_paths, data_path, id_col, ignore_cols,
+                                 dataset_type, args, conformal_enabled, conformal_alpha,
+                                 val_curves, result_key):
+    """Heavy post-training work, run in a background thread so the Train request can
+    return at once. Predicts the train/test splits to build the scatter/ROC plot data
+    and stats, writes the per-checkpoint train/test predictions CSV, computes the
+    conformal calibration set + coverage report, and finally writes the results JSON
+    with ``viz_status='done'`` (or ``'error'``). The page polls the results endpoint.
+    """
+    warnings = []
+    plot_data = None
+    conformal_info = None
+    viz_status = 'done'
+    try:
+        # Reload data fresh from CSV — run_training scales targets in-place,
+        # so reusing training data here would give scaled targets vs unscaled preds.
+        fresh_data = get_data(path=data_path, smiles_columns=args.smiles_columns,
+                              ignore_columns=ignore_cols, store_row=bool(id_col))
+        train_split, val_split, test_split = split_data(
+            data=fresh_data,
+            split_type=args.split_type,
+            sizes=args.split_sizes,
+            key_molecule_index=args.split_key_molecule,
+            seed=args.seed,
+            num_folds=args.num_folds,
+            args=args,
+        )
+
+        _use_unc = len(model_paths) > 1
+        pred_arguments = [
+            '--test_path', 'None',
+            '--preds_path', os.path.join(app.config['TEMP_FOLDER'], 'train_plot_preds.csv'),
+            '--checkpoint_paths', *model_paths,
+        ]
+        if _use_unc:
+            pred_arguments += ['--uncertainty_method', 'ensemble']
+        if not args.cuda:
+            pred_arguments.append('--no_cuda')
+        elif hasattr(args, 'gpu') and args.gpu is not None:
+            pred_arguments += ['--gpu', str(args.gpu)]
+        if args.features_generator is not None:
+            pred_arguments += ['--features_generator', *args.features_generator]
+            if not args.features_scaling:
+                pred_arguments.append('--no_features_scaling')
+
+        pred_args = PredictArgs().parse_args(pred_arguments)
+
+        # Load the ensemble once and reuse it across the train/test passes, so the
+        # models aren't re-read from disk for every split.
+        from chemprop.train.make_predictions import load_model
+        preloaded = load_model(pred_args, generator=False)
+
+        def _predict(dataset):
+            return make_predictions(args=pred_args, smiles=to_smiles_list(dataset),
+                                    model_objects=preloaded, return_uncertainty=_use_unc)
+
+        def _tt_var_to_std(row):
+            if row is None:
+                return None
+            result = []
+            for v in row:
+                try:
+                    fv = float(v)
+                    result.append(round(math.sqrt(fv), 3) if fv >= 0 else None)
+                except (TypeError, ValueError):
+                    result.append(None)
+            return result
+
+        def to_smiles_list(dataset):
+            smiles = dataset.smiles()
+            if smiles and isinstance(smiles[0], str):
+                return [[s] for s in smiles]
+            return smiles
+
+        def flat_smiles(dataset):
+            smiles = dataset.smiles()
+            if smiles and isinstance(smiles[0], str):
+                return smiles
+            return [s[0] for s in smiles]
+
+        train_ids = [d.row.get(id_col, '') for d in train_split] if id_col else None
+        test_ids  = [d.row.get(id_col, '') for d in test_split]  if id_col else None
+
+        tt_path = os.path.join(app.config['CHECKPOINT_FOLDER'], f'{ckpt_id}_train_test_preds.csv')
+
+        if dataset_type == 'regression':
+            if _use_unc:
+                train_preds, train_unc = _predict(train_split)
+                test_preds, test_unc = _predict(test_split)
+                train_std = [_tt_var_to_std(r) for r in train_unc]
+                test_std  = [_tt_var_to_std(r) for r in test_unc]
+            else:
+                train_preds = _predict(train_split)
+                test_preds = _predict(test_split)
+                train_std = test_std = None
+            train_targets = train_split.targets()
+            test_targets = test_split.targets()
+            train_smiles = flat_smiles(train_split)
+            test_smiles = flat_smiles(test_split)
+
+            def _reg_stats(pts):
+                if not pts:
+                    return None
+                y = np.array([p[0] for p in pts], dtype=float)
+                p = np.array([p[1] for p in pts], dtype=float)
+                ss_res = np.sum((y - p) ** 2)
+                ss_tot = np.sum((y - y.mean()) ** 2)
+                r2 = float(1 - ss_res / ss_tot) if ss_tot > 0 else 0.0
+                rmse = float(np.sqrt(np.mean((y - p) ** 2)))
+                mae = float(np.mean(np.abs(y - p)))
+                return {'r2': f'{r2:.3f}', 'rmse': f'{rmse:.3f}', 'mae': f'{mae:.3f}', 'n': len(pts)}
+
+            plot_data = []
+            for i, task_name in enumerate(args.task_names):
+                train_pts = [[train_targets[j][i], train_preds[j][i], train_smiles[j]]
+                             for j in range(len(train_preds))
+                             if train_preds[j] is not None and train_targets[j][i] is not None]
+                test_pts = [[test_targets[j][i], test_preds[j][i], test_smiles[j]]
+                            for j in range(len(test_preds))
+                            if test_preds[j] is not None and test_targets[j][i] is not None]
+                plot_data.append({
+                    'name': task_name,
+                    'train': train_pts,
+                    'test': test_pts,
+                    'train_stats': _reg_stats(train_pts),
+                    'test_stats': _reg_stats(test_pts),
+                })
+
+            with open(tt_path, 'w', newline='') as f:
+                writer = csv.writer(f)
+                header = (['id'] if id_col else []) + ['smiles', 'split']
+                for name in args.task_names:
+                    header += [name, f'pred_{name}']
+                if train_std is not None:
+                    for name in args.task_names:
+                        header.append(f'std_{name}')
+                writer.writerow(header)
+                for split_label, smi_list, tgts, preds_list, std_list, ids in [
+                    ('train', train_smiles, train_targets, train_preds, train_std, train_ids),
+                    ('test',  test_smiles,  test_targets,  test_preds,  test_std,  test_ids),
+                ]:
+                    for j in range(len(preds_list)):
+                        if preds_list[j] is None:
+                            continue
+                        row = ([ids[j]] if id_col else []) + [smi_list[j], split_label]
+                        for i in range(len(args.task_names)):
+                            t_val = tgts[j][i]
+                            p_val = preds_list[j][i]
+                            row += [
+                                round(t_val, 3) if t_val is not None else '',
+                                round(p_val, 3) if p_val is not None else '',
+                            ]
+                        if std_list is not None:
+                            srow = std_list[j] if std_list[j] is not None else [None] * len(args.task_names)
+                            row += [v if v is not None else '' for v in srow]
+                        writer.writerow(row)
+
+        elif dataset_type == 'classification':
+            from sklearn.metrics import (roc_curve, auc as sklearn_auc,
+                                         accuracy_score, precision_score,
+                                         recall_score, f1_score,
+                                         matthews_corrcoef, confusion_matrix)
+            if _use_unc:
+                train_preds, train_unc = _predict(train_split)
+                test_preds, test_unc = _predict(test_split)
+                train_std = [_tt_var_to_std(r) for r in train_unc]
+                test_std  = [_tt_var_to_std(r) for r in test_unc]
+            else:
+                train_preds = _predict(train_split)
+                test_preds = _predict(test_split)
+                train_std = test_std = None
+            train_targets = train_split.targets()
+            test_targets = test_split.targets()
+            train_smiles = flat_smiles(train_split)
+            test_smiles = flat_smiles(test_split)
+
+            plot_data = []
+            for i, task_name in enumerate(args.task_names):
+                t = [test_targets[j][i] for j in range(len(test_preds))
+                     if test_preds[j] is not None and test_targets[j][i] is not None]
+                p = [test_preds[j][i] for j in range(len(test_preds))
+                     if test_preds[j] is not None and test_targets[j][i] is not None]
+                if len(set(t)) == 2:
+                    fpr, tpr, _ = roc_curve(t, p)
+                    roc_auc = sklearn_auc(fpr, tpr)
+                    p_bin = [1 if prob >= 0.5 else 0 for prob in p]
+                    tn, fp, fn, tp = confusion_matrix(t, p_bin).ravel()
+                    specificity = tn / (tn + fp) if (tn + fp) > 0 else 0.0
+                    test_stats = {
+                        'n': len(t),
+                        'auc': round(roc_auc, 3),
+                        'accuracy': round(float(accuracy_score(t, p_bin)), 3),
+                        'precision': round(float(precision_score(t, p_bin, zero_division=0)), 3),
+                        'recall': round(float(recall_score(t, p_bin, zero_division=0)), 3),
+                        'specificity': round(float(specificity), 3),
+                        'f1': round(float(f1_score(t, p_bin, zero_division=0)), 3),
+                        'mcc': round(float(matthews_corrcoef(t, p_bin)), 3),
+                        'tn': int(tn), 'fp': int(fp),
+                        'fn': int(fn), 'tp': int(tp),
+                        'n_pos': int(fn + tp),
+                        'n_neg': int(tn + fp),
+                    }
+                    plot_data.append({
+                        'name': task_name,
+                        'fpr': fpr.tolist(),
+                        'tpr': tpr.tolist(),
+                        'auc': round(roc_auc, 3),
+                        'test_stats': test_stats,
+                    })
+
+            with open(tt_path, 'w', newline='') as f:
+                writer = csv.writer(f)
+                header = (['id'] if id_col else []) + ['smiles', 'split']
+                for name in args.task_names:
+                    header += [name, f'pred_prob_{name}']
+                if train_std is not None:
+                    for name in args.task_names:
+                        header.append(f'std_{name}')
+                writer.writerow(header)
+                for split_label, smi_list, tgts, preds_list, std_list, ids in [
+                    ('train', train_smiles, train_targets, train_preds, train_std, train_ids),
+                    ('test',  test_smiles,  test_targets,  test_preds,  test_std,  test_ids),
+                ]:
+                    for j in range(len(preds_list)):
+                        if preds_list[j] is None:
+                            continue
+                        row = ([ids[j]] if id_col else []) + [smi_list[j], split_label]
+                        for i in range(len(args.task_names)):
+                            t_val = tgts[j][i]
+                            p_val = preds_list[j][i]
+                            row += [
+                                int(t_val) if t_val is not None else '',
+                                round(p_val, 3) if p_val is not None else '',
+                            ]
+                        if std_list is not None:
+                            srow = std_list[j] if std_list[j] is not None else [None] * len(args.task_names)
+                            row += [v if v is not None else '' for v in srow]
+                        writer.writerow(row)
+
+        # Conformal: save the held-out validation split as the calibration set and
+        # report empirical coverage on the independent test split.
+        if conformal_enabled:
+            n_cal = len(val_split)
+            if not conformal_calibration_feasible(n_cal, conformal_alpha):
+                warnings.append(
+                    f'Conformal prediction skipped: the validation split (n={n_cal}) is too '
+                    f'small to calibrate at alpha={conformal_alpha}. Train on more data or '
+                    f'increase alpha.'
+                )
+            else:
+                cal_path = conformal_calibration_path(ckpt_id)
+                val_smiles = flat_smiles(val_split)
+                val_targets = val_split.targets()
+                with open(cal_path, 'w', newline='') as f:
+                    cwriter = csv.writer(f)
+                    cwriter.writerow(['smiles', *args.task_names])
+                    for s, t in zip(val_smiles, val_targets):
+                        cwriter.writerow([s, *['' if v is None else v for v in t]])
+
+                cal_method = 'conformal_regression' if dataset_type == 'regression' else 'conformal'
+                conf_arguments = [
+                    '--test_path', 'None',
+                    '--preds_path', os.path.join(app.config['TEMP_FOLDER'], 'train_conformal_preds.csv'),
+                    '--checkpoint_paths', *model_paths,
+                    '--smiles_columns', 'smiles',
+                    '--calibration_path', cal_path,
+                    '--calibration_method', cal_method,
+                    '--conformal_alpha', str(conformal_alpha),
+                ]
+                if not args.cuda:
+                    conf_arguments.append('--no_cuda')
+                elif hasattr(args, 'gpu') and args.gpu is not None:
+                    conf_arguments += ['--gpu', str(args.gpu)]
+                if args.features_generator is not None:
+                    conf_arguments += ['--features_generator', *args.features_generator]
+                    if not args.features_scaling:
+                        conf_arguments.append('--no_features_scaling')
+
+                conf_args = PredictArgs().parse_args(conf_arguments)
+                conf_preds, conf_unc = make_predictions(
+                    args=conf_args, smiles=to_smiles_list(test_split), return_uncertainty=True)
+                test_targets_c = test_split.targets()
+                n_tasks = len(args.task_names)
+
+                per_task = []
+                if dataset_type == 'regression':
+                    for ti, name in enumerate(args.task_names):
+                        covered = total = 0
+                        widths = []
+                        for j in range(len(conf_preds)):
+                            yt = test_targets_c[j][ti]
+                            if yt is None:
+                                continue
+                            try:
+                                mid = float(conf_preds[j][ti])
+                                half = float(conf_unc[j][ti])
+                            except (TypeError, ValueError, IndexError):
+                                continue
+                            total += 1
+                            if mid - half <= yt <= mid + half:
+                                covered += 1
+                            widths.append(2 * half)
+                        per_task.append({
+                            'name': name,
+                            'coverage': round(covered / total, 3) if total else None,
+                            'mean_width': round(float(np.mean(widths)), 3) if widths else None,
+                            'n': total,
+                        })
+                else:  # classification: in_set / out_set indicators per task
+                    for ti, name in enumerate(args.task_names):
+                        total = 0
+                        confident_correct = confident_total = 0
+                        cats = {'positive': 0, 'uncertain': 0, 'negative': 0}
+                        for j in range(len(conf_preds)):
+                            yt = test_targets_c[j][ti]
+                            if yt is None:
+                                continue
+                            try:
+                                in_set = int(round(float(conf_unc[j][ti])))
+                                out_set = int(round(float(conf_unc[j][ti + n_tasks])))
+                            except (TypeError, ValueError, IndexError):
+                                continue
+                            total += 1
+                            label = int(yt)
+                            if in_set == 1:
+                                cats['positive'] += 1
+                                confident_total += 1
+                                confident_correct += (label == 1)
+                            elif out_set == 0:
+                                cats['negative'] += 1
+                                confident_total += 1
+                                confident_correct += (label == 0)
+                            else:
+                                cats['uncertain'] += 1
+                        per_task.append({
+                            'name': name,
+                            'categories': cats,
+                            'confident_accuracy': round(confident_correct / confident_total, 3) if confident_total else None,
+                            'n': total,
+                        })
+
+                conformal_info = {
+                    'enabled': True,
+                    'alpha': conformal_alpha,
+                    'n_cal': n_cal,
+                    'mode': dataset_type,
+                    'per_task': per_task,
+                }
+
+    except Exception as e:
+        viz_status = 'error'
+        plot_data = None
+        conformal_info = None
+        warnings.append(f'Could not generate visualization: {e}')
+
+    _write_results_json(ckpt_id, {'dataset_type': dataset_type, 'plot_data': plot_data,
+                                  'val_curves': val_curves, 'conformal': conformal_info,
+                                  'viz_status': viz_status, 'warnings': warnings})
+
+    # Refresh the in-memory snapshot so the page reload (and any tab switch) renders
+    # the finished plots/conformal via the normal server-side template.
+    last = LAST_TRAIN_RESULT.get(result_key)
+    if last is not None and last.get('ckpt_id') == ckpt_id:
+        last.update(plot_data=plot_data, conformal=conformal_info, viz_pending=False,
+                    warnings=(last.get('warnings') or []) + warnings)
 
 
 @app.context_processor
@@ -626,401 +1017,51 @@ def train():
                     save_path = os.path.join(app.config['CHECKPOINT_FOLDER'], f'{model_id}.pt')
                     shutil.move(os.path.join(args.save_dir, root, fname), save_path)
 
-    # Generate visualization data
-    plot_data = None
-    conformal_info = None
-    if dataset_type in ['regression', 'classification']:
-        try:
-            model_paths = [os.path.join(app.config['CHECKPOINT_FOLDER'], f'{m["id"]}.pt')
-                           for m in db.get_models(ckpt_id)]
+    # Heavy visualization (predicting the train/test splits, conformal coverage) is
+    # deferred to a background thread so this request returns immediately and the page
+    # can show "training complete" while the plots are still being computed.
+    model_paths = [os.path.join(app.config['CHECKPOINT_FOLDER'], f'{m["id"]}.pt')
+                   for m in db.get_models(ckpt_id)]
+    result_key = str(current_user)
 
-            # Reload data fresh from CSV — run_training scales targets in-place,
-            # so reusing `data` here would give scaled targets against unscaled predictions.
-            fresh_data = get_data(path=data_path, smiles_columns=args.smiles_columns,
-                                  ignore_columns=ignore_cols, store_row=bool(id_col))
-            train_split, val_split, test_split = split_data(
-                data=fresh_data,
-                split_type=args.split_type,
-                sizes=args.split_sizes,
-                key_molecule_index=args.split_key_molecule,
-                seed=args.seed,
-                num_folds=args.num_folds,
-                args=args,
-            )
+    # Seed a pending results file + in-memory snapshot so the convergence chart and a
+    # "generating plots" state can show right away.
+    _write_results_json(ckpt_id, {'dataset_type': dataset_type, 'plot_data': None,
+                                  'val_curves': val_curves, 'conformal': None,
+                                  'viz_status': 'pending'})
+    LAST_TRAIN_RESULT[result_key] = dict(
+        trained=True, dataset_type=dataset_type, plot_data=None, ckpt_id=ckpt_id,
+        val_curves=val_curves, conformal=None, viz_pending=True,
+        warnings=list(warnings), errors=list(errors))
 
-            _use_unc = len(model_paths) > 1
-            pred_arguments = [
-                '--test_path', 'None',
-                '--preds_path', os.path.join(app.config['TEMP_FOLDER'], 'train_plot_preds.csv'),
-                '--checkpoint_paths', *model_paths,
-            ]
-            if _use_unc:
-                pred_arguments += ['--uncertainty_method', 'ensemble']
-            if not args.cuda:
-                pred_arguments.append('--no_cuda')
-            elif hasattr(args, 'gpu') and args.gpu is not None:
-                pred_arguments += ['--gpu', str(args.gpu)]
-            if args.features_generator is not None:
-                pred_arguments += ['--features_generator', *args.features_generator]
-                if not args.features_scaling:
-                    pred_arguments.append('--no_features_scaling')
+    viz_pending = dataset_type in ['regression', 'classification']
+    if viz_pending:
+        threading.Thread(
+            target=_compute_train_visualization,
+            args=(ckpt_id, model_paths, data_path, id_col, ignore_cols, dataset_type,
+                  args, conformal_enabled, conformal_alpha, val_curves, result_key),
+            daemon=True).start()
+    else:
+        # No scatter/ROC for other dataset types; mark results done immediately.
+        _write_results_json(ckpt_id, {'dataset_type': dataset_type, 'plot_data': None,
+                                      'val_curves': val_curves, 'conformal': None,
+                                      'viz_status': 'done'})
+        LAST_TRAIN_RESULT[result_key]['viz_pending'] = False
 
-            pred_args = PredictArgs().parse_args(pred_arguments)
-
-            def _tt_var_to_std(row):
-                if row is None:
-                    return None
-                result = []
-                for v in row:
-                    try:
-                        fv = float(v)
-                        result.append(round(math.sqrt(fv), 3) if fv >= 0 else None)
-                    except (TypeError, ValueError):
-                        result.append(None)
-                return result
-
-            def to_smiles_list(dataset):
-                smiles = dataset.smiles()
-                if smiles and isinstance(smiles[0], str):
-                    return [[s] for s in smiles]
-                return smiles
-
-            def flat_smiles(dataset):
-                smiles = dataset.smiles()
-                if smiles and isinstance(smiles[0], str):
-                    return smiles
-                return [s[0] for s in smiles]
-
-            train_ids = [d.row.get(id_col, '') for d in train_split] if id_col else None
-            test_ids  = [d.row.get(id_col, '') for d in test_split]  if id_col else None
-
-            if dataset_type == 'regression':
-                if _use_unc:
-                    train_preds, train_unc = make_predictions(args=pred_args, smiles=to_smiles_list(train_split), return_uncertainty=True)
-                    test_preds, test_unc = make_predictions(args=pred_args, smiles=to_smiles_list(test_split), return_uncertainty=True)
-                    train_std = [_tt_var_to_std(r) for r in train_unc]
-                    test_std  = [_tt_var_to_std(r) for r in test_unc]
-                else:
-                    train_preds = make_predictions(args=pred_args, smiles=to_smiles_list(train_split), return_uncertainty=False)
-                    test_preds = make_predictions(args=pred_args, smiles=to_smiles_list(test_split), return_uncertainty=False)
-                    train_std = test_std = None
-                train_targets = train_split.targets()
-                test_targets = test_split.targets()
-                train_smiles = flat_smiles(train_split)
-                test_smiles = flat_smiles(test_split)
-
-                def _reg_stats(pts):
-                    if not pts:
-                        return None
-                    y = np.array([p[0] for p in pts], dtype=float)
-                    p = np.array([p[1] for p in pts], dtype=float)
-                    ss_res = np.sum((y - p) ** 2)
-                    ss_tot = np.sum((y - y.mean()) ** 2)
-                    r2 = float(1 - ss_res / ss_tot) if ss_tot > 0 else 0.0
-                    rmse = float(np.sqrt(np.mean((y - p) ** 2)))
-                    mae = float(np.mean(np.abs(y - p)))
-                    return {'r2': f'{r2:.3f}', 'rmse': f'{rmse:.3f}', 'mae': f'{mae:.3f}', 'n': len(pts)}
-
-                plot_data = []
-                for i, task_name in enumerate(args.task_names):
-                    train_pts = [[train_targets[j][i], train_preds[j][i], train_smiles[j]]
-                                 for j in range(len(train_preds))
-                                 if train_preds[j] is not None and train_targets[j][i] is not None]
-                    test_pts = [[test_targets[j][i], test_preds[j][i], test_smiles[j]]
-                                for j in range(len(test_preds))
-                                if test_preds[j] is not None and test_targets[j][i] is not None]
-                    plot_data.append({
-                        'name': task_name,
-                        'train': train_pts,
-                        'test': test_pts,
-                        'train_stats': _reg_stats(train_pts),
-                        'test_stats': _reg_stats(test_pts),
-                    })
-
-                # Write combined train/test CSV for download
-                tt_path = os.path.join(app.config['TEMP_FOLDER'], app.config['TRAIN_TEST_PREDS_FILENAME'])
-                with open(tt_path, 'w', newline='') as f:
-                    writer = csv.writer(f)
-                    header = (['id'] if id_col else []) + ['smiles', 'split']
-                    for name in args.task_names:
-                        header += [name, f'pred_{name}']
-                    if train_std is not None:
-                        for name in args.task_names:
-                            header.append(f'std_{name}')
-                    writer.writerow(header)
-                    for split_label, smi_list, tgts, preds_list, std_list, ids in [
-                        ('train', train_smiles, train_targets, train_preds, train_std, train_ids),
-                        ('test',  test_smiles,  test_targets,  test_preds,  test_std,  test_ids),
-                    ]:
-                        for j in range(len(preds_list)):
-                            if preds_list[j] is None:
-                                continue
-                            row = ([ids[j]] if id_col else []) + [smi_list[j], split_label]
-                            for i in range(len(args.task_names)):
-                                t_val = tgts[j][i]
-                                p_val = preds_list[j][i]
-                                row += [
-                                    round(t_val, 3) if t_val is not None else '',
-                                    round(p_val, 3) if p_val is not None else '',
-                                ]
-                            if std_list is not None:
-                                srow = std_list[j] if std_list[j] is not None else [None] * len(args.task_names)
-                                row += [v if v is not None else '' for v in srow]
-                            writer.writerow(row)
-
-            elif dataset_type == 'classification':
-                from sklearn.metrics import (roc_curve, auc as sklearn_auc,
-                                             accuracy_score, precision_score,
-                                             recall_score, f1_score,
-                                             matthews_corrcoef, confusion_matrix)
-                if _use_unc:
-                    train_preds, train_unc = make_predictions(args=pred_args, smiles=to_smiles_list(train_split), return_uncertainty=True)
-                    test_preds, test_unc = make_predictions(args=pred_args, smiles=to_smiles_list(test_split), return_uncertainty=True)
-                    train_std = [_tt_var_to_std(r) for r in train_unc]
-                    test_std  = [_tt_var_to_std(r) for r in test_unc]
-                else:
-                    train_preds = make_predictions(args=pred_args, smiles=to_smiles_list(train_split), return_uncertainty=False)
-                    test_preds = make_predictions(args=pred_args, smiles=to_smiles_list(test_split), return_uncertainty=False)
-                    train_std = test_std = None
-                train_targets = train_split.targets()
-                test_targets = test_split.targets()
-                train_smiles = flat_smiles(train_split)
-                test_smiles = flat_smiles(test_split)
-
-                plot_data = []
-                for i, task_name in enumerate(args.task_names):
-                    t = [test_targets[j][i] for j in range(len(test_preds))
-                         if test_preds[j] is not None and test_targets[j][i] is not None]
-                    p = [test_preds[j][i] for j in range(len(test_preds))
-                         if test_preds[j] is not None and test_targets[j][i] is not None]
-                    if len(set(t)) == 2:
-                        fpr, tpr, _ = roc_curve(t, p)
-                        roc_auc = sklearn_auc(fpr, tpr)
-                        p_bin = [1 if prob >= 0.5 else 0 for prob in p]
-                        tn, fp, fn, tp = confusion_matrix(t, p_bin).ravel()
-                        specificity = tn / (tn + fp) if (tn + fp) > 0 else 0.0
-                        test_stats = {
-                            'n': len(t),
-                            'auc': round(roc_auc, 3),
-                            'accuracy': round(float(accuracy_score(t, p_bin)), 3),
-                            'precision': round(float(precision_score(t, p_bin, zero_division=0)), 3),
-                            'recall': round(float(recall_score(t, p_bin, zero_division=0)), 3),
-                            'specificity': round(float(specificity), 3),
-                            'f1': round(float(f1_score(t, p_bin, zero_division=0)), 3),
-                            'mcc': round(float(matthews_corrcoef(t, p_bin)), 3),
-                            'tn': int(tn), 'fp': int(fp),
-                            'fn': int(fn), 'tp': int(tp),
-                            'n_pos': int(fn + tp),
-                            'n_neg': int(tn + fp),
-                        }
-                        plot_data.append({
-                            'name': task_name,
-                            'fpr': fpr.tolist(),
-                            'tpr': tpr.tolist(),
-                            'auc': round(roc_auc, 3),
-                            'test_stats': test_stats,
-                        })
-
-                # Write combined train/test CSV for download
-                tt_path = os.path.join(app.config['TEMP_FOLDER'], app.config['TRAIN_TEST_PREDS_FILENAME'])
-                with open(tt_path, 'w', newline='') as f:
-                    writer = csv.writer(f)
-                    header = (['id'] if id_col else []) + ['smiles', 'split']
-                    for name in args.task_names:
-                        header += [name, f'pred_prob_{name}']
-                    if train_std is not None:
-                        for name in args.task_names:
-                            header.append(f'std_{name}')
-                    writer.writerow(header)
-                    for split_label, smi_list, tgts, preds_list, std_list, ids in [
-                        ('train', train_smiles, train_targets, train_preds, train_std, train_ids),
-                        ('test',  test_smiles,  test_targets,  test_preds,  test_std,  test_ids),
-                    ]:
-                        for j in range(len(preds_list)):
-                            if preds_list[j] is None:
-                                continue
-                            row = ([ids[j]] if id_col else []) + [smi_list[j], split_label]
-                            for i in range(len(args.task_names)):
-                                t_val = tgts[j][i]
-                                p_val = preds_list[j][i]
-                                row += [
-                                    int(t_val) if t_val is not None else '',
-                                    round(p_val, 3) if p_val is not None else '',
-                                ]
-                            if std_list is not None:
-                                srow = std_list[j] if std_list[j] is not None else [None] * len(args.task_names)
-                                row += [v if v is not None else '' for v in srow]
-                            writer.writerow(row)
-
-            # Conformal prediction: save the held-out validation split as the
-            # calibration set so predictions can carry conformal intervals/sets,
-            # and report empirical coverage on the independent test split.
-            if conformal_enabled:
-                n_cal = len(val_split)
-                if not conformal_calibration_feasible(n_cal, conformal_alpha):
-                    warnings.append(
-                        f'Conformal prediction skipped: the validation split (n={n_cal}) is too '
-                        f'small to calibrate at alpha={conformal_alpha}. Train on more data or '
-                        f'increase alpha.'
-                    )
-                else:
-                    cal_path = conformal_calibration_path(ckpt_id)
-                    val_smiles = flat_smiles(val_split)
-                    val_targets = val_split.targets()
-                    with open(cal_path, 'w', newline='') as f:
-                        cwriter = csv.writer(f)
-                        cwriter.writerow(['smiles', *args.task_names])
-                        for s, t in zip(val_smiles, val_targets):
-                            cwriter.writerow([s, *['' if v is None else v for v in t]])
-
-                    cal_method = 'conformal_regression' if dataset_type == 'regression' else 'conformal'
-                    conf_arguments = [
-                        '--test_path', 'None',
-                        '--preds_path', os.path.join(app.config['TEMP_FOLDER'], 'train_conformal_preds.csv'),
-                        '--checkpoint_paths', *model_paths,
-                        # See note in predict(): name the calibration SMILES column so the
-                        # in-memory-SMILES code path can still load the calibration CSV.
-                        '--smiles_columns', 'smiles',
-                        '--calibration_path', cal_path,
-                        '--calibration_method', cal_method,
-                        '--conformal_alpha', str(conformal_alpha),
-                    ]
-                    if not args.cuda:
-                        conf_arguments.append('--no_cuda')
-                    elif hasattr(args, 'gpu') and args.gpu is not None:
-                        conf_arguments += ['--gpu', str(args.gpu)]
-                    if args.features_generator is not None:
-                        conf_arguments += ['--features_generator', *args.features_generator]
-                        if not args.features_scaling:
-                            conf_arguments.append('--no_features_scaling')
-
-                    conf_args = PredictArgs().parse_args(conf_arguments)
-                    conf_preds, conf_unc = make_predictions(
-                        args=conf_args, smiles=to_smiles_list(test_split), return_uncertainty=True)
-                    test_targets_c = test_split.targets()
-                    n_tasks = len(args.task_names)
-
-                    per_task = []
-                    if dataset_type == 'regression':
-                        for ti, name in enumerate(args.task_names):
-                            covered = total = 0
-                            widths = []
-                            for j in range(len(conf_preds)):
-                                yt = test_targets_c[j][ti]
-                                if yt is None:
-                                    continue
-                                try:
-                                    mid = float(conf_preds[j][ti])
-                                    half = float(conf_unc[j][ti])
-                                except (TypeError, ValueError, IndexError):
-                                    continue
-                                total += 1
-                                if mid - half <= yt <= mid + half:
-                                    covered += 1
-                                widths.append(2 * half)
-                            per_task.append({
-                                'name': name,
-                                'coverage': round(covered / total, 3) if total else None,
-                                'mean_width': round(float(np.mean(widths)), 3) if widths else None,
-                                'n': total,
-                            })
-                    else:  # classification: in_set / out_set indicators per task
-                        for ti, name in enumerate(args.task_names):
-                            total = 0
-                            confident_correct = confident_total = 0
-                            cats = {'positive': 0, 'uncertain': 0, 'negative': 0}
-                            for j in range(len(conf_preds)):
-                                yt = test_targets_c[j][ti]
-                                if yt is None:
-                                    continue
-                                try:
-                                    in_set = int(round(float(conf_unc[j][ti])))
-                                    out_set = int(round(float(conf_unc[j][ti + n_tasks])))
-                                except (TypeError, ValueError, IndexError):
-                                    continue
-                                total += 1
-                                label = int(yt)
-                                if in_set == 1:
-                                    cats['positive'] += 1
-                                    confident_total += 1
-                                    confident_correct += (label == 1)
-                                elif out_set == 0:
-                                    cats['negative'] += 1
-                                    confident_total += 1
-                                    confident_correct += (label == 0)
-                                else:
-                                    cats['uncertain'] += 1
-                            per_task.append({
-                                'name': name,
-                                'categories': cats,
-                                'confident_accuracy': round(confident_correct / confident_total, 3) if confident_total else None,
-                                'n': total,
-                            })
-
-                    conformal_info = {
-                        'enabled': True,
-                        'alpha': conformal_alpha,
-                        'n_cal': n_cal,
-                        'mode': dataset_type,
-                        'per_task': per_task,
-                    }
-
-        except Exception as e:
-            warnings.append(f'Could not generate visualization: {str(e)}')
-
-    tt_path = os.path.join(app.config['TEMP_FOLDER'], app.config['TRAIN_TEST_PREDS_FILENAME'])
-    LAST_TRAIN_RESULT[str(current_user)] = dict(
-        trained=True,
-        dataset_type=dataset_type,
-        plot_data=plot_data,
-        ckpt_id=ckpt_id,
-        val_curves=val_curves,
-        conformal=conformal_info,
-        warnings=warnings,
-        errors=errors,
-    )
-
-    # Persist results to disk so the Checkpoints page can show them permanently
-    results_path = os.path.join(app.config['CHECKPOINT_FOLDER'], f'{ckpt_id}_results.json')
-    try:
-        class _NumpyEncoder(json.JSONEncoder):
-            def default(self, obj):
-                if isinstance(obj, np.floating):
-                    return float(obj)
-                if isinstance(obj, np.integer):
-                    return int(obj)
-                if isinstance(obj, np.ndarray):
-                    return obj.tolist()
-                return super().default(obj)
-        with open(results_path, 'w') as _f:
-            json.dump({'dataset_type': dataset_type, 'plot_data': plot_data,
-                       'val_curves': val_curves, 'conformal': conformal_info}, _f, cls=_NumpyEncoder)
-    except Exception as e:
-        warnings.append(f'Could not save results for Checkpoints page: {str(e)}')
-
-    # Copy train/test predictions CSV to permanent storage alongside the checkpoint
-    if os.path.exists(tt_path):
-        preds_dest = os.path.join(app.config['CHECKPOINT_FOLDER'], f'{ckpt_id}_train_test_preds.csv')
-        try:
-            shutil.copy2(tt_path, preds_dest)
-        except Exception:
-            pass
-
-    # Now that LAST_TRAIN_RESULT and the JSON file are ready, allow the polling
-    # JS to detect training completion and reload to show results.
+    # Allow the polling JS to detect completion and reload to the results shell.
     if use_progress_bar:
         TRAINING = 0
         TRAINING_MODE = ''
         PROGRESS = mp.Value('d', 0.0)
 
-    preds_perm_path = os.path.join(app.config['CHECKPOINT_FOLDER'], f'{ckpt_id}_train_test_preds.csv')
     return render_train(trained=True,
                         dataset_type=dataset_type,
-                        plot_data=plot_data,
+                        plot_data=None,
                         ckpt_id=ckpt_id,
                         val_curves=val_curves,
-                        conformal=conformal_info,
-                        train_test_preds_available=os.path.exists(preds_perm_path),
+                        conformal=None,
+                        viz_pending=viz_pending,
+                        train_test_preds_available=False,
                         warnings=warnings,
                         errors=errors)
 
