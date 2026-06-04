@@ -251,7 +251,8 @@
                 } else if (wasTraining) {
                     // Training just finished while we were watching from a reloaded tab — fetch results
                     wasTraining = false;
-                    window.location.reload();
+                    // GET-navigate (not reload) so we never re-submit the training POST
+                    window.location.href = '/train';
                 }
             });
         }
@@ -353,7 +354,8 @@
                 function poll() {
                     $.getJSON('/checkpoint/' + ckptId + '/results', function(data) {
                         if (data && data.viz_status && data.viz_status !== 'pending') {
-                            window.location.reload();
+                            // GET-navigate (not reload) so we never re-submit the training POST
+                            window.location.href = '/train';
                         } else {
                             setTimeout(poll, 1500);
                         }
