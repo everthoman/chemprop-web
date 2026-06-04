@@ -453,8 +453,9 @@ def train():
         int(request.form['ensembleSize']), request.form['checkpointName']
     gpu = request.form.get('gpu')
     patience_raw = request.form.get('patience', '').strip()
-    # Blank or 0 disables early stopping; 0 is the sentinel the spinner can step
-    # down to, so the field can always be returned to "disabled".
+    # Early stopping is gated by a checkbox on the form: when unchecked the
+    # patience input is disabled and therefore not submitted, so no value here
+    # means "disabled". A 0 is also treated as disabled defensively.
     patience = int(patience_raw) if patience_raw and int(patience_raw) > 0 else None
     # Minimum validation-metric improvement that counts as progress for early
     # stopping; smaller (noise-level) gains do not reset the patience counter.
