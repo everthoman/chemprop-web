@@ -25,6 +25,32 @@
         <br>
         <br>
 
+        <!--Conformal prediction-->
+        <input type="hidden" name="conformalEnabled" id="conformalEnabled" value="False">
+        <div class="checkbox">
+            <label>
+                <input type="checkbox" id="conformalCheckbox"> Conformal prediction
+                <small class="text-muted">— calibrated prediction intervals (regression) or label sets (classification)</small>
+            </label>
+        </div>
+        <div id="conformalOptions" style="display:none; margin-left:20px;">
+            <label style="font-weight:normal;">Error rate α
+                <input type="number" name="conformalAlpha" id="conformalAlpha" min="0.01" max="0.99" step="0.01" value="0.1" style="width:80px;">
+            </label>
+            <small class="text-muted">&nbsp; (α=0.1 ⇒ 90% target coverage). Requires a checkpoint trained with conformal enabled.</small>
+        </div>
+        <script>
+            $(document).ready(function() {
+                $("#conformalCheckbox").change(function() {
+                    var on = $(this).is(":checked");
+                    $("#conformalEnabled").val(on ? "True" : "False");
+                    $("#conformalOptions").toggle(on);
+                });
+            });
+        </script>
+
+        <br>
+
         <!--SMILES upload type selector-->
         <div class="btn-group" id="inputSelect" data-toggle="buttons">
             <label id="textButton" class="btn btn-primary active">
@@ -164,6 +190,25 @@
         <br>
         <br>
 
+        {% if conformal %}
+            <div class="alert alert-info" style="font-size:0.9em;">
+                {% if conformal.mode == 'regression' %}
+                <strong>Conformal prediction intervals.</strong> Each prediction carries a
+                {{ ((1 - conformal.alpha) * 100) | round(0, 'floor') | int }}% prediction interval
+                (α={{ conformal.alpha }}), calibrated on the model's held-out validation set. Over many
+                molecules, the true value is expected to fall inside the interval about
+                {{ ((1 - conformal.alpha) * 100) | round(0, 'floor') | int }}% of the time.
+                {% else %}
+                <strong>Conformal label sets.</strong> At α={{ conformal.alpha }}
+                ({{ ((1 - conformal.alpha) * 100) | round(0, 'floor') | int }}% coverage), each prediction
+                is labelled <span class="label label-success">Positive</span> (confidently active),
+                <span class="label label-danger">Negative</span> (confidently inactive), or
+                <span class="label label-warning">Uncertain</span> (neither can be ruled out), calibrated
+                on the model's held-out validation set.
+                {% endif %}
+            </div>
+        {% endif %}
+
         {% if applicability %}
             <div class="alert alert-info" style="font-size:0.9em;">
                 <strong>Applicability domain.</strong> Each prediction is flagged
@@ -194,7 +239,13 @@
                     {% endif %}
                     <p><strong>SMILES:</strong> {{ smiles[i][0] }}</p>
                     {% for j in range(num_tasks) %}
-                        <p><strong>{{ task_names[j] }}:</strong> {{ preds[i][j] | round(3) if preds[i][j] is number else preds[i][j] }}{% if unc_std and unc_std[i] is not none and unc_std[i][j] is not none %} <span class="text-muted">± {{ unc_std[i][j] }}</span>{% endif %}</p>
+                        <p><strong>{{ task_names[j] }}:</strong> {{ preds[i][j] | round(3) if preds[i][j] is number else preds[i][j] }}{% if unc_std and unc_std[i] is not none and unc_std[i][j] is not none %} <span class="text-muted">± {{ unc_std[i][j] }}</span>{% endif %}{% if conformal and conformal.mode == 'regression' and conformal.intervals[i][j] is not none %} <span class="text-muted">({{ ((1 - conformal.alpha) * 100) | round(0, 'floor') | int }}% PI: {{ conformal.intervals[i][j][0] }} – {{ conformal.intervals[i][j][1] }})</span>{% endif %}
+                        {%- if conformal and conformal.mode == 'classification' and conformal.categories[i][j] is not none %}
+                            {% set cat = conformal.categories[i][j].cat %}
+                            {% if cat == 'positive' %}<span class="label label-success">Positive</span>
+                            {% elif cat == 'negative' %}<span class="label label-danger">Negative</span>
+                            {% else %}<span class="label label-warning">Uncertain</span>{% endif %}
+                        {%- endif %}</p>
                     {% endfor %}
                     {% if applicability and applicability[i] is not none %}
                         <p>

@@ -123,6 +123,41 @@ from chemprop.web.app.workers import predict_worker as _predict_worker
 _spawn = mp.get_context('spawn')
 
 
+def conformal_calibration_path(ckpt_id) -> str:
+    """Path to a checkpoint's saved conformal calibration set (held-out val split).
+
+    Its presence is what makes conformal prediction available for a checkpoint
+    at predict time; uploaded checkpoints won't have one.
+    """
+    return os.path.join(app.config['CHECKPOINT_FOLDER'], f'{ckpt_id}_calibration.csv')
+
+
+def parse_conformal_form(form) -> Tuple[bool, float]:
+    """Read the conformal checkbox + alpha from a submitted form.
+
+    Returns (enabled, alpha) with alpha clamped to the open interval (0, 1) and
+    defaulting to 0.1 (i.e. 90% target coverage).
+    """
+    enabled = form.get('conformalEnabled', 'False') == 'True'
+    raw = (form.get('conformalAlpha', '') or '').strip()
+    try:
+        alpha = float(raw) if raw else 0.1
+    except ValueError:
+        alpha = 0.1
+    if not (0 < alpha < 1):
+        alpha = 0.1
+    return enabled, alpha
+
+
+def conformal_calibration_feasible(n_cal: int, alpha: float) -> bool:
+    """Whether a calibration set of size ``n_cal`` can yield a finite conformal quantile.
+
+    chemprop computes ``q_level = ceil((n+1)(1-alpha)) / n`` and takes that quantile of
+    the calibration scores; it must be <= 1 for the quantile to be well defined.
+    """
+    return n_cal >= 1 and math.ceil((n_cal + 1) * (1 - alpha)) <= n_cal
+
+
 @app.context_processor
 def inject_version():
     return {'web_version': app.config['WEB_VERSION']}
@@ -431,6 +466,7 @@ def train():
     ignore_cols = [id_col] if id_col else []
     features_generator = request.form.get('featuresGenerator', 'none')
     use_progress_bar = request.form.get('useProgressBar', 'True') == 'True'
+    conformal_enabled, conformal_alpha = parse_conformal_form(request.form)
 
     # Handle optional hyperopt config (content sent as hidden field via FileReader)
     config_content = request.form.get('configFileContent', '').strip()
@@ -580,6 +616,7 @@ def train():
 
     # Generate visualization data
     plot_data = None
+    conformal_info = None
     if dataset_type in ['regression', 'classification']:
         try:
             model_paths = [os.path.join(app.config['CHECKPOINT_FOLDER'], f'{m["id"]}.pt')
@@ -589,7 +626,7 @@ def train():
             # so reusing `data` here would give scaled targets against unscaled predictions.
             fresh_data = get_data(path=data_path, smiles_columns=args.smiles_columns,
                                   ignore_columns=ignore_cols, store_row=bool(id_col))
-            train_split, _, test_split = split_data(
+            train_split, val_split, test_split = split_data(
                 data=fresh_data,
                 split_type=args.split_type,
                 sizes=args.split_sizes,
@@ -803,6 +840,119 @@ def train():
                                 row += [v if v is not None else '' for v in srow]
                             writer.writerow(row)
 
+            # Conformal prediction: save the held-out validation split as the
+            # calibration set so predictions can carry conformal intervals/sets,
+            # and report empirical coverage on the independent test split.
+            if conformal_enabled:
+                n_cal = len(val_split)
+                if not conformal_calibration_feasible(n_cal, conformal_alpha):
+                    warnings.append(
+                        f'Conformal prediction skipped: the validation split (n={n_cal}) is too '
+                        f'small to calibrate at alpha={conformal_alpha}. Train on more data or '
+                        f'increase alpha.'
+                    )
+                else:
+                    cal_path = conformal_calibration_path(ckpt_id)
+                    val_smiles = flat_smiles(val_split)
+                    val_targets = val_split.targets()
+                    with open(cal_path, 'w', newline='') as f:
+                        cwriter = csv.writer(f)
+                        cwriter.writerow(['smiles', *args.task_names])
+                        for s, t in zip(val_smiles, val_targets):
+                            cwriter.writerow([s, *['' if v is None else v for v in t]])
+
+                    cal_method = 'conformal_regression' if dataset_type == 'regression' else 'conformal'
+                    conf_arguments = [
+                        '--test_path', 'None',
+                        '--preds_path', os.path.join(app.config['TEMP_FOLDER'], 'train_conformal_preds.csv'),
+                        '--checkpoint_paths', *model_paths,
+                        # See note in predict(): name the calibration SMILES column so the
+                        # in-memory-SMILES code path can still load the calibration CSV.
+                        '--smiles_columns', 'smiles',
+                        '--calibration_path', cal_path,
+                        '--calibration_method', cal_method,
+                        '--conformal_alpha', str(conformal_alpha),
+                    ]
+                    if not args.cuda:
+                        conf_arguments.append('--no_cuda')
+                    elif hasattr(args, 'gpu') and args.gpu is not None:
+                        conf_arguments += ['--gpu', str(args.gpu)]
+                    if args.features_generator is not None:
+                        conf_arguments += ['--features_generator', *args.features_generator]
+                        if not args.features_scaling:
+                            conf_arguments.append('--no_features_scaling')
+
+                    conf_args = PredictArgs().parse_args(conf_arguments)
+                    conf_preds, conf_unc = make_predictions(
+                        args=conf_args, smiles=to_smiles_list(test_split), return_uncertainty=True)
+                    test_targets_c = test_split.targets()
+                    n_tasks = len(args.task_names)
+
+                    per_task = []
+                    if dataset_type == 'regression':
+                        for ti, name in enumerate(args.task_names):
+                            covered = total = 0
+                            widths = []
+                            for j in range(len(conf_preds)):
+                                yt = test_targets_c[j][ti]
+                                if yt is None:
+                                    continue
+                                try:
+                                    mid = float(conf_preds[j][ti])
+                                    half = float(conf_unc[j][ti])
+                                except (TypeError, ValueError, IndexError):
+                                    continue
+                                total += 1
+                                if mid - half <= yt <= mid + half:
+                                    covered += 1
+                                widths.append(2 * half)
+                            per_task.append({
+                                'name': name,
+                                'coverage': round(covered / total, 3) if total else None,
+                                'mean_width': round(float(np.mean(widths)), 3) if widths else None,
+                                'n': total,
+                            })
+                    else:  # classification: in_set / out_set indicators per task
+                        for ti, name in enumerate(args.task_names):
+                            total = 0
+                            confident_correct = confident_total = 0
+                            cats = {'positive': 0, 'uncertain': 0, 'negative': 0}
+                            for j in range(len(conf_preds)):
+                                yt = test_targets_c[j][ti]
+                                if yt is None:
+                                    continue
+                                try:
+                                    in_set = int(round(float(conf_unc[j][ti])))
+                                    out_set = int(round(float(conf_unc[j][ti + n_tasks])))
+                                except (TypeError, ValueError, IndexError):
+                                    continue
+                                total += 1
+                                label = int(yt)
+                                if in_set == 1:
+                                    cats['positive'] += 1
+                                    confident_total += 1
+                                    confident_correct += (label == 1)
+                                elif out_set == 0:
+                                    cats['negative'] += 1
+                                    confident_total += 1
+                                    confident_correct += (label == 0)
+                                else:
+                                    cats['uncertain'] += 1
+                            per_task.append({
+                                'name': name,
+                                'categories': cats,
+                                'confident_accuracy': round(confident_correct / confident_total, 3) if confident_total else None,
+                                'n': total,
+                            })
+
+                    conformal_info = {
+                        'enabled': True,
+                        'alpha': conformal_alpha,
+                        'n_cal': n_cal,
+                        'mode': dataset_type,
+                        'per_task': per_task,
+                    }
+
         except Exception as e:
             warnings.append(f'Could not generate visualization: {str(e)}')
 
@@ -813,6 +963,7 @@ def train():
         plot_data=plot_data,
         ckpt_id=ckpt_id,
         val_curves=val_curves,
+        conformal=conformal_info,
         warnings=warnings,
         errors=errors,
     )
@@ -830,7 +981,8 @@ def train():
                     return obj.tolist()
                 return super().default(obj)
         with open(results_path, 'w') as _f:
-            json.dump({'dataset_type': dataset_type, 'plot_data': plot_data, 'val_curves': val_curves}, _f, cls=_NumpyEncoder)
+            json.dump({'dataset_type': dataset_type, 'plot_data': plot_data,
+                       'val_curves': val_curves, 'conformal': conformal_info}, _f, cls=_NumpyEncoder)
     except Exception as e:
         warnings.append(f'Could not save results for Checkpoints page: {str(e)}')
 
@@ -855,6 +1007,7 @@ def train():
                         plot_data=plot_data,
                         ckpt_id=ckpt_id,
                         val_curves=val_curves,
+                        conformal=conformal_info,
                         train_test_preds_available=os.path.exists(preds_perm_path),
                         warnings=warnings,
                         errors=errors)
@@ -1098,14 +1251,43 @@ def predict():
     gpu = request.form.get('gpu')
     train_args = load_args(model_paths[0])
 
-    # Build arguments
-    use_uncertainty = len(model_paths) > 1
+    # Conformal prediction (optional): needs a calibration set saved at train time
+    # and a regression/classification model. Falls back to standard output if either
+    # is missing, surfacing a warning to the user.
+    conformal_enabled, conformal_alpha = parse_conformal_form(request.form)
+    cal_path = conformal_calibration_path(ckpt_id)
+    pred_warnings = []
+    use_conformal = False
+    if conformal_enabled:
+        if train_args.dataset_type not in ('regression', 'classification'):
+            pred_warnings.append('Conformal prediction is not available for this model type; showing standard predictions.')
+        elif not os.path.exists(cal_path):
+            pred_warnings.append('Conformal prediction is unavailable for this checkpoint — no calibration set was saved when it was trained. Showing standard predictions.')
+        else:
+            use_conformal = True
+
+    # Build arguments. Conformal and ensemble std-dev are mutually exclusive output
+    # modes (chemprop rejects an uncertainty method alongside conformal regression);
+    # when conformal is active it takes precedence.
+    ensemble_unc = len(model_paths) > 1 and not use_conformal
+    return_unc = ensemble_unc or use_conformal
     arguments = [
         '--test_path', 'None',
         '--preds_path', os.path.join(app.config['TEMP_FOLDER'], app.config['PREDICTIONS_FILENAME']),
         '--checkpoint_paths', *model_paths
     ]
-    if use_uncertainty:
+    if use_conformal:
+        cal_method = 'conformal_regression' if train_args.dataset_type == 'regression' else 'conformal'
+        arguments += [
+            # Name the calibration file's SMILES column explicitly: when predicting from
+            # an in-memory SMILES list there is no test CSV to auto-detect it from, so
+            # smiles_columns would otherwise be [None] and the calibration load would fail.
+            '--smiles_columns', 'smiles',
+            '--calibration_path', cal_path,
+            '--calibration_method', cal_method,
+            '--conformal_alpha', str(conformal_alpha),
+        ]
+    elif ensemble_unc:
         arguments += ['--uncertainty_method', 'ensemble']
 
     if gpu is not None:
@@ -1132,7 +1314,7 @@ def predict():
 
     # Run predictions in a subprocess so they can be cancelled
     result_queue = _spawn.Queue()
-    pred_proc = _spawn.Process(target=_predict_worker, args=(arguments, smiles, result_queue, use_uncertainty))
+    pred_proc = _spawn.Process(target=_predict_worker, args=(arguments, smiles, result_queue, return_unc))
     pred_proc.start()
     ACTIVE_PROCESS = pred_proc
     TRAINING = 1
@@ -1174,7 +1356,50 @@ def predict():
             except (TypeError, ValueError):
                 result.append(None)
         return result
-    unc_std = [_var_to_std(row) for row in raw_unc] if raw_unc is not None else None
+
+    # When conformal is active, raw_unc holds conformal output rather than ensemble
+    # variance, so the ± std column is suppressed and replaced by intervals/sets.
+    unc_std = None if use_conformal else (
+        [_var_to_std(row) for row in raw_unc] if raw_unc is not None else None)
+
+    conformal_result = None
+    if use_conformal and raw_unc is not None:
+        if train_args.dataset_type == 'regression':
+            # raw_unc[i][t] is the half-interval; interval is [pred - half, pred + half].
+            intervals = []
+            for i, pred in enumerate(preds):
+                row = raw_unc[i] if raw_unc[i] is not None else []
+                cell = []
+                for ti in range(num_tasks):
+                    try:
+                        mid = float(pred[ti])
+                        half = float(row[ti])
+                        cell.append((round(mid - half, 3), round(mid + half, 3)))
+                    except (TypeError, ValueError, IndexError):
+                        cell.append(None)
+                intervals.append(cell)
+            conformal_result = {'mode': 'regression', 'alpha': conformal_alpha, 'intervals': intervals}
+        else:
+            # raw_unc[i] = [in_set_t1..in_set_tn, out_set_t1..out_set_tn] (0/1 indicators).
+            categories = []
+            for i in range(len(preds)):
+                row = raw_unc[i] if raw_unc[i] is not None else []
+                cell = []
+                for ti in range(num_tasks):
+                    try:
+                        in_set = int(round(float(row[ti])))
+                        out_set = int(round(float(row[ti + num_tasks])))
+                        if in_set == 1:
+                            cat = 'positive'
+                        elif out_set == 0:
+                            cat = 'negative'
+                        else:
+                            cat = 'uncertain'
+                        cell.append({'cat': cat, 'in_set': in_set, 'out_set': out_set})
+                    except (TypeError, ValueError, IndexError):
+                        cell.append(None)
+                categories.append(cell)
+            conformal_result = {'mode': 'classification', 'alpha': conformal_alpha, 'categories': categories}
 
     # Replace invalid smiles with message
     invalid_smiles_warning = 'Invalid SMILES String'
@@ -1207,8 +1432,16 @@ def predict():
     with open(preds_path, 'w', newline='') as f:
         writer = csv.writer(f)
         std_cols = [f'std_{t}' for t in task_names] if unc_std is not None else []
+        conf_cols = []
+        if conformal_result is not None:
+            if conformal_result['mode'] == 'regression':
+                for t in task_names:
+                    conf_cols += [f'pi_low_{t}', f'pi_high_{t}']
+            else:
+                for t in task_names:
+                    conf_cols += [f'conformal_{t}', f'in_set_{t}', f'out_set_{t}']
         ad_cols = ['ad_similarity', 'ad_in_domain'] if applicability is not None else []
-        header = (['id'] if has_ids else []) + ['smiles'] + task_names + std_cols + ad_cols
+        header = (['id'] if has_ids else []) + ['smiles'] + task_names + std_cols + conf_cols + ad_cols
         writer.writerow(header)
         for idx, (smi_row, pred) in enumerate(zip(smiles, preds)):
             row = []
@@ -1219,6 +1452,13 @@ def predict():
             if unc_std is not None:
                 urow = unc_std[idx] if unc_std[idx] is not None else [None] * num_tasks
                 row.extend([v if v is not None else '' for v in urow])
+            if conformal_result is not None:
+                if conformal_result['mode'] == 'regression':
+                    for cell in conformal_result['intervals'][idx]:
+                        row.extend(['', ''] if cell is None else [cell[0], cell[1]])
+                else:
+                    for cell in conformal_result['categories'][idx]:
+                        row.extend(['', '', ''] if cell is None else [cell['cat'], cell['in_set'], cell['out_set']])
             if applicability is not None:
                 ad = applicability[idx]
                 if ad is not None:
@@ -1226,6 +1466,9 @@ def predict():
                 else:
                     row.extend(['', ''])
             writer.writerow(row)
+
+    if None in preds:
+        pred_warnings.append("List contains invalid SMILES strings")
 
     return render_predict(predicted=True,
                           smiles=smiles,
@@ -1235,11 +1478,12 @@ def predict():
                           num_tasks=len(task_names),
                           preds=preds,
                           unc_std=unc_std,
+                          conformal=conformal_result,
                           identifiers=identifiers,
                           applicability=applicability,
                           ad_threshold=round(ad_threshold, 3) if ad_threshold is not None else None,
                           attribution_svgs=attribution_svgs,
-                          warnings=["List contains invalid SMILES strings"] if None in preds else None,
+                          warnings=pred_warnings or None,
                           errors=["No SMILES strings given"] if len(preds) == 0 else None)
 
 
@@ -1558,9 +1802,10 @@ def delete_checkpoint(checkpoint: int):
 
     :param checkpoint: The id of the checkpoint to delete.
     """
-    results_path = os.path.join(app.config['CHECKPOINT_FOLDER'], f'{checkpoint}_results.json')
-    if os.path.exists(results_path):
-        os.remove(results_path)
+    for suffix in ('_results.json', '_train_test_preds.csv', '_calibration.csv'):
+        sidecar = os.path.join(app.config['CHECKPOINT_FOLDER'], f'{checkpoint}{suffix}')
+        if os.path.exists(sidecar):
+            os.remove(sidecar)
     db.delete_ckpt(checkpoint)
     return redirect(url_for('checkpoints'))
 

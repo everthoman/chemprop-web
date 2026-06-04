@@ -952,7 +952,7 @@ class ConformalMulticlassCalibrator(UncertaintyCalibrator):
                 all_scores[task_mask, i], targets[task_mask, i].reshape(-1, 1).astype(int), axis=1
             ).squeeze(1)  # shape(valid_data)
             q_level = np.ceil((num_data + 1) * (1 - self.conformal_alpha)) / num_data
-            qhat = np.quantile(task_scores, q_level, interpolation='higher')
+            qhat = np.quantile(task_scores, q_level, method='higher')
             self.qhats.append(qhat)
 
     def apply_calibration(self, uncal_predictor: UncertaintyPredictor):
@@ -1075,8 +1075,8 @@ class ConformalMultilabelCalibrator(UncertaintyCalibrator):
             masked_scores = score_row[data_mask]
             calibration_scores_out[i] = np.max(masked_scores)
 
-        self.tout = np.quantile(calibration_scores_out, 1 - self.conformal_alpha / 2, interpolation="higher")
-        self.tin = np.quantile(calibration_scores_in, self.conformal_alpha / 2, interpolation="higher")
+        self.tout = np.quantile(calibration_scores_out, 1 - self.conformal_alpha / 2, method="higher")
+        self.tin = np.quantile(calibration_scores_in, self.conformal_alpha / 2, method="higher")
 
     def apply_calibration(self, uncal_predictor: UncertaintyPredictor):
         uncal_preds = np.array(uncal_predictor.get_uncal_preds())  # shape(data, task)
@@ -1148,7 +1148,7 @@ class ConformalRegressionCalibrator(UncertaintyCalibrator):
                 uncal_interval_lower - task_targets, task_targets - uncal_interval_upper
             )
             q_level = np.ceil((num_data + 1) * (1 - self.conformal_alpha)) / num_data
-            qhat = np.quantile(calibration_scores, q_level, interpolation='higher')
+            qhat = np.quantile(calibration_scores, q_level, method='higher')
             self.qhats.append(qhat)
 
     def apply_calibration(self, uncal_predictor: UncertaintyPredictor):

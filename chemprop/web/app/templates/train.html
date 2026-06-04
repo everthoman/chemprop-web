@@ -69,6 +69,30 @@
             <option value="10">10</option>
         </select>
 
+        <h5>Conformal prediction <small class="text-muted">(optional)</small></h5>
+        <input type="hidden" name="conformalEnabled" id="conformalEnabled" value="False">
+        <div class="checkbox" style="margin-top:0;">
+            <label>
+                <input type="checkbox" id="conformalCheckbox"> Enable conformal prediction
+                <small class="text-muted">— saves the held-out validation set so predictions can carry calibrated intervals/label sets (works with any ensemble size)</small>
+            </label>
+        </div>
+        <div id="conformalOptions" style="display:none; margin-left:20px;">
+            <label style="font-weight:normal;">Error rate α
+                <input type="number" name="conformalAlpha" id="conformalAlpha" min="0.01" max="0.99" step="0.01" value="0.1" style="width:80px;">
+            </label>
+            <small class="text-muted">&nbsp; (α=0.1 ⇒ 90% target coverage)</small>
+        </div>
+        <script>
+            $(document).ready(function() {
+                $("#conformalCheckbox").change(function() {
+                    var on = $(this).is(":checked");
+                    $("#conformalEnabled").val(on ? "True" : "False");
+                    $("#conformalOptions").toggle(on);
+                });
+            });
+        </script>
+
         <h5>Hyperopt config <small class="text-muted">(optional)</small></h5>
         <input type="file" id="configFileInput" accept=".json">
         <input type="hidden" name="configFileContent" id="configFileContent">
@@ -289,6 +313,46 @@
                 renderConvergenceChart('convergenceChart', {{ val_curves | tojson }});
             })();
         </script>
+        {% endif %}
+
+        {% if conformal and conformal.enabled %}
+        <hr>
+        <div id="conformalPanel" style="margin-bottom:16px">
+            <h4>Conformal prediction
+                <small class="text-muted">(α={{ conformal.alpha }} ⇒ {{ ((1 - conformal.alpha) * 100) | round(0, 'floor') | int }}% target coverage, calibrated on {{ conformal.n_cal }} validation molecules)</small>
+            </h4>
+            {% if conformal.mode == 'regression' %}
+            <table class="table table-sm table-bordered" style="max-width:520px;">
+                <thead><tr><th>Task</th><th>Empirical coverage (test)</th><th>Mean interval width</th></tr></thead>
+                <tbody>
+                    {% for t in conformal.per_task %}
+                    <tr>
+                        <td>{{ t.name }}</td>
+                        <td>{{ t.coverage if t.coverage is not none else '—' }} <small class="text-muted">(n={{ t.n }})</small></td>
+                        <td>± {{ (t.mean_width / 2) | round(3) if t.mean_width is not none else '—' }} <small class="text-muted">(full width {{ t.mean_width if t.mean_width is not none else '—' }})</small></td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            <small class="text-muted">Empirical coverage is the fraction of held-out test molecules whose true value fell inside the conformal interval; it should land near the target.</small>
+            {% else %}
+            <table class="table table-sm table-bordered" style="max-width:640px;">
+                <thead><tr><th>Task</th><th>Confident positive</th><th>Uncertain</th><th>Confident negative</th><th>Accuracy of confident calls</th></tr></thead>
+                <tbody>
+                    {% for t in conformal.per_task %}
+                    <tr>
+                        <td>{{ t.name }}</td>
+                        <td>{{ t.categories.positive }}</td>
+                        <td>{{ t.categories.uncertain }}</td>
+                        <td>{{ t.categories.negative }}</td>
+                        <td>{{ t.confident_accuracy if t.confident_accuracy is not none else '—' }} <small class="text-muted">(n={{ t.n }} test)</small></td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            <small class="text-muted">Counts of held-out test molecules in each conformal category; "accuracy of confident calls" is the fraction of confident positive/negative calls that match the true label.</small>
+            {% endif %}
+        </div>
         {% endif %}
 
         {% if plot_data %}
