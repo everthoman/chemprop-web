@@ -456,6 +456,15 @@ def train():
     # Blank or 0 disables early stopping; 0 is the sentinel the spinner can step
     # down to, so the field can always be returned to "disabled".
     patience = int(patience_raw) if patience_raw and int(patience_raw) > 0 else None
+    # Minimum validation-metric improvement that counts as progress for early
+    # stopping; smaller (noise-level) gains do not reset the patience counter.
+    min_delta_raw = request.form.get('minDelta', '').strip()
+    try:
+        min_delta = float(min_delta_raw) if min_delta_raw else 0.0
+    except ValueError:
+        min_delta = 0.0
+    if min_delta < 0:
+        min_delta = 0.0
     data_path = os.path.join(app.config['DATA_FOLDER'], f'{data_name}.csv')
     dataset_type = request.form.get('datasetType', 'regression')
     split_type = request.form.get('splitType', 'random')
@@ -561,7 +570,7 @@ def train():
         CURRENT_LOG_PATH = os.path.join(temp_dir, 'verbose.log')
         train_proc = _spawn.Process(target=_train_worker,
                                     args=(train_arg_list, args.task_names, data_path,
-                                          ignore_cols, id_col, temp_dir, patience))
+                                          ignore_cols, id_col, temp_dir, patience, min_delta))
         train_proc.start()
         ACTIVE_PROCESS = train_proc
 

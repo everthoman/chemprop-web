@@ -291,6 +291,12 @@ def run_training(args: TrainArgs,
         # Run training
         best_score = float('inf') if args.minimize_score else -float('inf')
         best_epoch, n_iter = 0, 0
+        # Early-stopping reference: the patience counter only resets when an epoch
+        # improves on this reference by more than `min_delta`, so tiny (noise-level)
+        # gains do not keep training alive. `best_score`/`best_epoch` above still
+        # track the strict best for checkpoint saving.
+        es_ref_score = best_score
+        epochs_no_progress = 0
         for epoch in trange(args.epochs):
             debug(f'Epoch {epoch}')
             n_iter = train(
@@ -355,9 +361,21 @@ def run_training(args: TrainArgs,
                                 atom_descriptor_scaler, bond_descriptor_scaler, atom_bond_scaler, args)
 
             patience = getattr(args, 'patience', None)
-            if patience and (epoch - best_epoch) >= patience:
-                info(f'Early stopping: no improvement in {patience} epochs (best epoch {best_epoch})')
-                break
+            if patience:
+                min_delta = getattr(args, 'min_delta', 0.0) or 0.0
+                # An epoch counts as progress only if it beats the running reference
+                # by more than min_delta; otherwise the no-progress counter advances.
+                significant = (args.minimize_score and mean_val_score < es_ref_score - min_delta) or \
+                              (not args.minimize_score and mean_val_score > es_ref_score + min_delta)
+                if significant:
+                    es_ref_score = mean_val_score
+                    epochs_no_progress = 0
+                else:
+                    epochs_no_progress += 1
+                    if epochs_no_progress >= patience:
+                        info(f'Early stopping: validation {args.metric} did not improve by more than '
+                             f'{min_delta:g} for {patience} epochs (best epoch {best_epoch})')
+                        break
 
         # Evaluate on test set using model with best validation score
         info(f'Model {model_idx} best validation {args.metric} = {best_score:.6f} on epoch {best_epoch}')

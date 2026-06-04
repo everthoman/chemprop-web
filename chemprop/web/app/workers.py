@@ -7,7 +7,7 @@ itself is lightweight to import.
 """
 
 
-def train_worker(train_arg_list, task_names, data_path, ignore_cols, id_col, save_dir, patience=None):
+def train_worker(train_arg_list, task_names, data_path, ignore_cols, id_col, save_dir, patience=None, min_delta=0.0):
     import logging as _logging
     from chemprop.args import TrainArgs
     from chemprop.data import get_data
@@ -18,6 +18,7 @@ def train_worker(train_arg_list, task_names, data_path, ignore_cols, id_col, sav
     args = TrainArgs().parse_args(train_arg_list + ['--save_dir', save_dir])
     args.task_names = task_names
     args.patience = patience
+    args.min_delta = min_delta
     data = get_data(path=data_path, smiles_columns=args.smiles_columns,
                     ignore_columns=ignore_cols or None, store_row=bool(id_col),
                     features_generator=args.features_generator)
