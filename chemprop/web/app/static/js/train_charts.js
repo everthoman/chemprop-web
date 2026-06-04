@@ -192,8 +192,10 @@ function initCharts(plotData, datasetType, ckptId) {
             if (!allVals.length) return;
             var minVal = Math.min.apply(null, allVals);
             var maxVal = Math.max.apply(null, allVals);
-            var pad = (maxVal - minVal) * 0.05 || 0.5;
-            var axisMin = minVal - pad, axisMax = maxVal + pad;
+            // Round the axis bounds out to whole units so ticks land on integers
+            // (e.g. data spanning -1.8..4.8 gives an axis of -2..5).
+            var axisMin = Math.floor(minVal), axisMax = Math.ceil(maxVal);
+            if (axisMax === axisMin) axisMax = axisMin + 1;
             new Chart(ctx, {
                 type: 'scatter',
                 data: { datasets: [
@@ -204,8 +206,8 @@ function initCharts(plotData, datasetType, ckptId) {
                 options: {
                     plugins: { legend: { display: true, labels: { filter: function(item) { return item.text !== 'y = x'; } } } },
                     scales: {
-                        x: { type: 'linear', title: { display: true, text: 'Experimental' }, min: axisMin, max: axisMax },
-                        y: { type: 'linear', title: { display: true, text: 'Predicted'    }, min: axisMin, max: axisMax }
+                        x: { type: 'linear', title: { display: true, text: 'Experimental' }, min: axisMin, max: axisMax, ticks: { stepSize: 1 } },
+                        y: { type: 'linear', title: { display: true, text: 'Predicted'    }, min: axisMin, max: axisMax, ticks: { stepSize: 1 } }
                     },
                     onHover: function(event, elements) {
                         if (elements.length > 0 && elements[0].datasetIndex < 2) {
