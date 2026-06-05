@@ -1617,9 +1617,17 @@ def download_train_test_predictions():
 @app.route('/download_hyperopt_config')
 @check_not_demo
 def download_hyperopt_config():
-    """Downloads the best hyperparameter config from the last hyperopt run as a .json file."""
+    """Downloads the best hyperparameter config from the last hyperopt run as a .json file,
+    named ``<dataset_name>_hyperopt.json`` after the dataset that was optimized."""
+    download_name = 'hyperopt_config.json'
+    ds_id = LAST_HYPEROPT_SETTINGS.get(str(current_user_id() or ''), {}).get('dataName')
+    if ds_id:
+        row = db.query_db('SELECT dataset_name FROM dataset WHERE id = ?', (ds_id,), one=True)
+        if row and row['dataset_name']:
+            safe = secure_filename(row['dataset_name']) or 'dataset'
+            download_name = f'{safe}_hyperopt.json'
     return send_from_directory(app.config['TEMP_FOLDER'], 'hyperopt_config.json', as_attachment=True,
-                               download_name='hyperopt_config.json', cache_timeout=-1)
+                               download_name=download_name, cache_timeout=-1)
 
 
 @app.route('/data')
