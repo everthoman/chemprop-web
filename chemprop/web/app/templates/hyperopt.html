@@ -12,45 +12,47 @@
         <h5>Data</h5>
         <select name="dataName" required>
             {% for dataset in datasets %}
-                <option value="{{ dataset[0] }}">{{ dataset[1] }}</option>
+                <option value="{{ dataset[0] }}" {% if settings.dataName == dataset[0]|string %}selected{% endif %}>{{ dataset[1] }}</option>
             {% endfor %}
         </select>
         <br>
         <h5>Identifier column <small class="text-muted">(optional — column name containing compound IDs)</small></h5>
-        <input type="text" name="idColumn" placeholder="e.g. compound_id">
+        <input type="text" name="idColumn" placeholder="e.g. compound_id" value="{{ settings.idColumn or '' }}">
         <br>
         <h5>Dataset type</h5>
+        {% set dtype = settings.datasetType or 'regression' %}
         <div class="btn-group" id="datasetTypeSelect" data-toggle="buttons">
-          <label class="btn btn-primary active">
-            <input type="radio" name="datasetType" id="regression" value="regression" autocomplete="off"> Regression
+          <label class="btn btn-primary {% if dtype == 'regression' %}active{% endif %}">
+            <input type="radio" name="datasetType" id="regression" value="regression" autocomplete="off" {% if dtype == 'regression' %}checked{% endif %}> Regression
           </label>
-          <label class="btn btn-primary">
-            <input type="radio" name="datasetType" id="classification" value="classification" autocomplete="off"> Classification
+          <label class="btn btn-primary {% if dtype == 'classification' %}active{% endif %}">
+            <input type="radio" name="datasetType" id="classification" value="classification" autocomplete="off" {% if dtype == 'classification' %}checked{% endif %}> Classification
           </label>
         </div>
         <br>
 
         <h5>Epochs per trial</h5>
-        <input type="number" name="epochs" min="1" step="1" value="30" required>
+        <input type="number" name="epochs" min="1" step="1" value="{{ settings.epochs or '30' }}" required>
 
         <h5>Number of trials</h5>
-        <input type="number" name="numIters" min="1" step="1" value="20" required>
+        <input type="number" name="numIters" min="1" step="1" value="{{ settings.numIters or '20' }}" required>
         <small class="text-muted"> &nbsp; (first half will be random, second half guided by TPE)</small>
 
         <h5>Search parameters</h5>
+        {% set kws = settings.searchKeywords if settings.searchKeywords else ['basic'] %}
         <div>
-            <label><input type="checkbox" name="searchKeywords" value="basic" checked> Basic &mdash; depth, FFN layers, dropout, hidden size</label>
+            <label><input type="checkbox" name="searchKeywords" value="basic" {% if 'basic' in kws %}checked{% endif %}> Basic &mdash; depth, FFN layers, dropout, hidden size</label>
         </div>
         <div>
-            <label><input type="checkbox" name="searchKeywords" value="learning_rate"> Learning rate &mdash; max LR, LR schedule, warmup epochs</label>
+            <label><input type="checkbox" name="searchKeywords" value="learning_rate" {% if 'learning_rate' in kws %}checked{% endif %}> Learning rate &mdash; max LR, LR schedule, warmup epochs</label>
         </div>
 
         {% if cuda %}
             <h5>GPU</h5>
             <select name="gpu">
-                <option value="None">None</option>
+                <option value="None" {% if settings.gpu == 'None' %}selected{% endif %}>None</option>
                 {% for gpu in gpus %}
-                    <option value="{{gpu}}" {% if loop.first %}selected{% endif %}>{{gpu}}</option>
+                    <option value="{{gpu}}" {% if settings.gpu == gpu|string or (not settings.gpu and loop.first) %}selected{% endif %}>{{gpu}}</option>
                 {% endfor %}
             </select>
             <br>

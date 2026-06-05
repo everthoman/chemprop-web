@@ -41,6 +41,8 @@ ACTIVE_PROCESS = None
 PROGRESS_BAR_PROCESS = None
 CANCELLED = False
 LAST_TRAIN_RESULT = {}  # user_key -> last successful training kwargs, served on GET after tab switch
+LAST_TRAIN_SETTINGS = {}     # user_key -> last submitted Train form values, to repopulate the form
+LAST_HYPEROPT_SETTINGS = {}  # user_key -> last submitted Hyperopt form values
 
 
 def _find_non_numeric_columns(data_path: str, columns: List[str], sample_rows: int = 200) -> List[str]:
@@ -822,6 +824,9 @@ def render_train(**kwargs):
             last['train_test_preds_available'] = bool(_ckpt_id) and os.path.exists(_perm)
             kwargs = {**last, **kwargs}
 
+    # Repopulate the form with the user's last-applied settings (until they submit new ones).
+    kwargs.setdefault('settings', LAST_TRAIN_SETTINGS.get(str(current_user_id() or ''), {}))
+
     return render_template('train.html',
                            datasets=db.get_datasets(current_user_id()),
                            current_user=current_user_id() or '',
@@ -843,6 +848,16 @@ def train():
 
     if request.method == 'GET':
         return render_train()
+
+    # Remember the submitted form values so the page repopulates with them (instead of
+    # resetting to defaults) until the user applies new settings. Raw strings are stored
+    # so the template can re-select/re-check fields directly.
+    LAST_TRAIN_SETTINGS[str(current_user_id() or '')] = {
+        k: request.form.get(k, '') for k in (
+            'dataName', 'idColumn', 'datasetType', 'splitType', 'featuresGenerator',
+            'epochs', 'ensembleSize', 'patience', 'minDelta',
+            'conformalEnabled', 'conformalAlpha', 'checkpointName', 'gpu')
+    }
 
     # Get arguments
     data_name, epochs, ensemble_size, checkpoint_name = \
@@ -1090,6 +1105,7 @@ def hyperopt_progress_bar(hyperopt_checkpoint_dir: str, num_iters: int, progress
 def render_hyperopt(**kwargs):
     """Renders the hyperopt page with specified kwargs."""
     data_upload_warnings, data_upload_errors = get_upload_warnings_errors('data')
+    kwargs.setdefault('settings', LAST_HYPEROPT_SETTINGS.get(str(current_user_id() or ''), {}))
     return render_template('hyperopt.html',
                            datasets=db.get_datasets(current_user_id()),
                            cuda=app.config['CUDA'],
@@ -1110,6 +1126,17 @@ def hyperopt_page():
 
     if request.method == 'GET':
         return render_hyperopt()
+
+    # Remember submitted settings so the form repopulates with them until changed.
+    LAST_HYPEROPT_SETTINGS[str(current_user_id() or '')] = {
+        'dataName': request.form.get('dataName', ''),
+        'idColumn': request.form.get('idColumn', ''),
+        'datasetType': request.form.get('datasetType', 'regression'),
+        'epochs': request.form.get('epochs', ''),
+        'numIters': request.form.get('numIters', ''),
+        'searchKeywords': request.form.getlist('searchKeywords'),
+        'gpu': request.form.get('gpu', ''),
+    }
 
     # Get form fields
     data_name = request.form['dataName']

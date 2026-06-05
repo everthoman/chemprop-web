@@ -10,63 +10,67 @@
         <h5>Data</h5>
         <select name="dataName" required>
             {% for dataset in datasets %}
-                <option value="{{ dataset[0] }}">{{ dataset[1] }}</option>
+                <option value="{{ dataset[0] }}" {% if settings.dataName == dataset[0]|string %}selected{% endif %}>{{ dataset[1] }}</option>
             {% endfor %}
         </select>
         <br>
         <h5>Identifier column <small class="text-muted">(optional — column name containing compound IDs)</small></h5>
-        <input type="text" name="idColumn" placeholder="e.g. compound_id">
+        <input type="text" name="idColumn" placeholder="e.g. compound_id" value="{{ settings.idColumn or '' }}">
         <br>
         <h5>Dataset type</h5>
+        {% set dtype = settings.datasetType or 'regression' %}
         <div class="btn-group" id="datasetTypeSelect" data-toggle="buttons">
-          <label class="btn btn-primary active">
-            <input type="radio" name="datasetType" id="regression" value="regression" autocomplete="off"> Regression
+          <label class="btn btn-primary {% if dtype == 'regression' %}active{% endif %}">
+            <input type="radio" name="datasetType" id="regression" value="regression" autocomplete="off" {% if dtype == 'regression' %}checked{% endif %}> Regression
           </label>
-          <label class="btn btn-primary">
-            <input type="radio" name="datasetType" id="classification" value="classification" autocomplete="off"> Classification
+          <label class="btn btn-primary {% if dtype == 'classification' %}active{% endif %}">
+            <input type="radio" name="datasetType" id="classification" value="classification" autocomplete="off" {% if dtype == 'classification' %}checked{% endif %}> Classification
           </label>
         </div>
         <br>
 
         <h5>Split type</h5>
+        {% set stype = settings.splitType or 'random' %}
         <div class="btn-group" id="splitTypeSelect" data-toggle="buttons">
-          <label class="btn btn-primary active">
-            <input type="radio" name="splitType" value="random" autocomplete="off" checked> Random
+          <label class="btn btn-primary {% if stype == 'random' %}active{% endif %}">
+            <input type="radio" name="splitType" value="random" autocomplete="off" {% if stype == 'random' %}checked{% endif %}> Random
           </label>
-          <label class="btn btn-primary">
-            <input type="radio" name="splitType" value="scaffold_balanced" autocomplete="off"> Scaffold
+          <label class="btn btn-primary {% if stype == 'scaffold_balanced' %}active{% endif %}">
+            <input type="radio" name="splitType" value="scaffold_balanced" autocomplete="off" {% if stype == 'scaffold_balanced' %}checked{% endif %}> Scaffold
           </label>
         </div>
         <br>
 
         <h5>Additional molecule-level features <small class="text-muted">(optional)</small></h5>
+        {% set fg = settings.featuresGenerator or 'none' %}
         <select name="featuresGenerator">
-            <option value="none">None</option>
-            <option value="rdkit_2d_normalized">RDKit 2D normalized (recommended)</option>
-            <option value="rdkit_2d">RDKit 2D (unnormalized)</option>
-            <option value="morgan">Morgan binary fingerprints (radius 2, 2048 bits)</option>
-            <option value="morgan_count">Morgan count fingerprints (radius 2, 2048 bits)</option>
+            <option value="none" {% if fg == 'none' %}selected{% endif %}>None</option>
+            <option value="rdkit_2d_normalized" {% if fg == 'rdkit_2d_normalized' %}selected{% endif %}>RDKit 2D normalized (recommended)</option>
+            <option value="rdkit_2d" {% if fg == 'rdkit_2d' %}selected{% endif %}>RDKit 2D (unnormalized)</option>
+            <option value="morgan" {% if fg == 'morgan' %}selected{% endif %}>Morgan binary fingerprints (radius 2, 2048 bits)</option>
+            <option value="morgan_count" {% if fg == 'morgan_count' %}selected{% endif %}>Morgan count fingerprints (radius 2, 2048 bits)</option>
         </select>
         <br>
 
         <h5>Epochs</h5>
-        <input type="number" name="epochs" min="1" step="1" value="50" required>
+        <input type="number" name="epochs" min="1" step="1" value="{{ settings.epochs or '50' }}" required>
 
         <h5>Early stopping <small class="text-muted">(optional)</small></h5>
+        {% set es_on = settings.patience and settings.patience|trim %}
         <div class="checkbox" style="margin-top:0;">
             <label>
-                <input type="checkbox" id="esCheckbox"> Enable early stopping
+                <input type="checkbox" id="esCheckbox" {% if es_on %}checked{% endif %}> Enable early stopping
                 <small class="text-muted">— stop a model once its validation metric stops improving (each ensemble member decides independently)</small>
             </label>
         </div>
-        <div id="esOptions" style="display:none; margin-left:20px;">
+        <div id="esOptions" style="display:{% if es_on %}block{% else %}none{% endif %}; margin-left:20px;">
             <label style="font-weight:normal;">Window (epochs)
-                <input type="number" name="patience" min="1" step="1" value="5" style="width:80px;" disabled>
+                <input type="number" name="patience" min="1" step="1" value="{{ settings.patience or '5' }}" style="width:80px;" {% if not es_on %}disabled{% endif %}>
             </label>
             <small class="text-muted">&nbsp; stop once the validation metric stays flat over this many consecutive epochs</small>
             <br>
             <label style="font-weight:normal;">Stability band
-                <input type="number" name="minDelta" min="0" step="0.001" value="0.01" style="width:90px;" disabled>
+                <input type="number" name="minDelta" min="0" step="0.001" value="{{ settings.minDelta or '0.01' }}" style="width:90px;" {% if not es_on %}disabled{% endif %}>
             </label>
             <small class="text-muted">&nbsp; "flat" means the validation metric (e.g. RMSE) swings by no more than this across the window; while it swings more, training continues</small>
         </div>
@@ -83,24 +87,26 @@
         </script>
 
         <h5>Ensemble Size</h5>
+        {% set es = settings.ensembleSize or '3' %}
         <select name="ensembleSize" required>
-            <option value="1">1</option>
-            <option value="3" selected="selected">3</option>
-            <option value="5">5</option>
-            <option value="10">10</option>
+            <option value="1" {% if es == '1' %}selected{% endif %}>1</option>
+            <option value="3" {% if es == '3' %}selected{% endif %}>3</option>
+            <option value="5" {% if es == '5' %}selected{% endif %}>5</option>
+            <option value="10" {% if es == '10' %}selected{% endif %}>10</option>
         </select>
 
         <h5>Conformal prediction <small class="text-muted">(optional)</small></h5>
-        <input type="hidden" name="conformalEnabled" id="conformalEnabled" value="False">
+        {% set conf_on = settings.conformalEnabled == 'True' %}
+        <input type="hidden" name="conformalEnabled" id="conformalEnabled" value="{{ 'True' if conf_on else 'False' }}">
         <div class="checkbox" style="margin-top:0;">
             <label>
-                <input type="checkbox" id="conformalCheckbox"> Enable conformal prediction
+                <input type="checkbox" id="conformalCheckbox" {% if conf_on %}checked{% endif %}> Enable conformal prediction
                 <small class="text-muted">— saves the held-out validation set so predictions can carry calibrated intervals/label sets (works with any ensemble size)</small>
             </label>
         </div>
-        <div id="conformalOptions" style="display:none; margin-left:20px;">
+        <div id="conformalOptions" style="display:{% if conf_on %}block{% else %}none{% endif %}; margin-left:20px;">
             <label style="font-weight:normal;">Error rate α
-                <input type="number" name="conformalAlpha" id="conformalAlpha" min="0.01" max="0.99" step="0.01" value="0.1" style="width:80px;">
+                <input type="number" name="conformalAlpha" id="conformalAlpha" min="0.01" max="0.99" step="0.01" value="{{ settings.conformalAlpha or '0.1' }}" style="width:80px;">
             </label>
             <small class="text-muted">&nbsp; (α=0.1 ⇒ 90% target coverage)</small>
         </div>
@@ -121,14 +127,14 @@
 
         <h5>Checkpoint name</h5>
         <!--TODO: Verify that name isn't already in use-->
-        <input type="text" name="checkpointName" placeholder="name" required>
+        <input type="text" name="checkpointName" placeholder="name" value="{{ settings.checkpointName or '' }}" required>
 
         {% if cuda %}
             <h5>GPU</h5>
             <select name="gpu">
-                <option value="None">None</option>
+                <option value="None" {% if settings.gpu == 'None' %}selected{% endif %}>None</option>
                 {% for gpu in gpus %}
-                    <option value="{{gpu}}" {% if loop.first %}selected{% endif %}>{{gpu}}</option>
+                    <option value="{{gpu}}" {% if settings.gpu == gpu|string or (not settings.gpu and loop.first) %}selected{% endif %}>{{gpu}}</option>
                 {% endfor %}
             </select>
             <br>
