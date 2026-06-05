@@ -122,6 +122,14 @@ Each prediction also carries an **applicability domain** flag indicating whether
 
 ---
 
+## Changes in v1.8.8
+
+- **"Results first" training** — the Train page now returns the moment training finishes: it shows *Training complete!* with the validation-convergence chart and a *Generating plots…* spinner, while the scatter/ROC plots and conformal report are computed in a background thread and appear when ready. The trained model is usable on the Predict page immediately, before the plots finish. (Fixes along the way: the background prediction no longer crashes on larger datasets — DataLoader workers are disabled in that thread — and the results page no longer auto-starts a second training when it refreshes.)
+- **Reworked early stopping** — early stopping is now an explicit **Enable early stopping** checkbox exposing a **Window** (epochs) and a **Stability band**. Training a model stops only once its validation metric stays within the band across the whole window (i.e. the curve has flattened); while it still swings by more than the band, training continues. Each ensemble member decides independently, and the strict-best checkpoint is always kept.
+- **Forms remember their settings** — the Train and Hyperopt pages repopulate every field (dataset, identifier column, dataset type, split type, features, epochs, ensemble size, early-stopping and conformal options, checkpoint name, GPU, and the hyperopt trials/search selection) with your last-applied values until you change them, so you can see what a finished run was trained on.
+- **Cleaner workflow pages** — data upload lives only on the Data tab and checkpoint upload only on the Checkpoints tab (removed from Train/Hyperopt/Predict); the redundant in-page headings on Train/Hyperopt/Predict were dropped; and the regression predicted-vs-experimental scatter now snaps its axes to whole-unit ticks.
+- **Hyperopt config download** is now named `<dataset_name>_hyperopt.json` after the optimized dataset.
+
 ## Changes in v1.8.7
 
 - **Conformal prediction on Train and Predict** — an optional, distribution-free uncertainty mode selectable on both pages with a target error rate **α** (default 0.1 ⇒ 90% coverage). Enabling it at training time saves the model's held-out validation split as a calibration set beside the checkpoint; the Train results then report empirical coverage and mean interval width (regression) or a confident/uncertain category breakdown (classification) on the independent test set. At predict time, regression predictions gain a `(1−α)` interval (`pi_low_<task>`/`pi_high_<task>` in the CSV) and classification predictions gain a Positive/Negative/Uncertain conformal label (`conformal_<task>`/`in_set_<task>`/`out_set_<task>`). Works with any ensemble size, including a single model, and takes precedence over the ensemble ± std; checkpoints without a saved calibration set fall back to standard predictions.
