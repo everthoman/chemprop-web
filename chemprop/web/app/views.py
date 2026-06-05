@@ -139,16 +139,16 @@ def parse_conformal_form(form) -> Tuple[bool, float]:
     """Read the conformal checkbox + alpha from a submitted form.
 
     Returns (enabled, alpha) with alpha clamped to the open interval (0, 1) and
-    defaulting to 0.1 (i.e. 90% target coverage).
+    defaulting to 0.15 (i.e. 85% target coverage).
     """
     enabled = form.get('conformalEnabled', 'False') == 'True'
     raw = (form.get('conformalAlpha', '') or '').strip()
     try:
-        alpha = float(raw) if raw else 0.1
+        alpha = float(raw) if raw else 0.15
     except ValueError:
-        alpha = 0.1
+        alpha = 0.15
     if not (0 < alpha < 1):
-        alpha = 0.1
+        alpha = 0.15
     return enabled, alpha
 
 
