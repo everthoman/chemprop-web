@@ -8,7 +8,7 @@ import os
 import torch
 
 
-WEB_VERSION = '1.8.7'
+WEB_VERSION = '1.8.8'
 
 DEFAULT_USER_ID = 1
 
