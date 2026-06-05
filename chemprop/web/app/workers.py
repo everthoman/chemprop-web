@@ -37,16 +37,22 @@ def hyperopt_worker(hyper_args_list):
     run_hyperopt(hyper_args)
 
 
-def predict_worker(arguments, smiles, result_queue, return_uncertainty=False):
+def predict_worker(arguments, smiles, result_queue, return_uncertainty=False, calibration_smiles=None):
     from chemprop.args import PredictArgs
     from chemprop.train import make_predictions
     try:
         args = PredictArgs().parse_args(arguments)
         if return_uncertainty:
             preds, unc = make_predictions(args=args, smiles=smiles, return_uncertainty=True)
-            result_queue.put({'success': True, 'preds': preds, 'unc': unc})
+            result = {'success': True, 'preds': preds, 'unc': unc}
         else:
             preds = make_predictions(args=args, smiles=smiles, return_uncertainty=False)
-            result_queue.put({'success': True, 'preds': preds})
+            result = {'success': True, 'preds': preds}
+        # For Mondrian (class-conditional) conformal we also need plain probabilities
+        # on the calibration set to compute the per-class thresholds.
+        if calibration_smiles:
+            result['cal_preds'] = make_predictions(args=args, smiles=calibration_smiles,
+                                                   return_uncertainty=False)
+        result_queue.put(result)
     except Exception as e:
         result_queue.put({'success': False, 'error': str(e)})

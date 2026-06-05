@@ -192,12 +192,14 @@
                 molecules, the true value is expected to fall inside the interval about
                 {{ ((1 - conformal.alpha) * 100) | round(0, 'floor') | int }}% of the time.
                 {% else %}
-                <strong>Conformal label sets.</strong> At α={{ conformal.alpha }}
+                <strong>Conformal label sets (class-conditional / Mondrian).</strong> At α={{ conformal.alpha }}
                 ({{ ((1 - conformal.alpha) * 100) | round(0, 'floor') | int }}% coverage), each prediction
-                is labelled <span class="label label-success">Positive</span> (confidently active),
-                <span class="label label-danger">Negative</span> (confidently inactive), or
-                <span class="label label-warning">Uncertain</span> (neither can be ruled out), calibrated
-                on the model's held-out validation set.
+                is labelled <span class="label label-success">Active</span> (confidently active),
+                <span class="label label-danger">Inactive</span> (confidently inactive),
+                <span class="label label-warning">Uncertain</span> (both plausible), or
+                <span class="label label-default">Indeterminate</span> (neither plausible — atypical molecule).
+                Each class is calibrated separately on the model's held-out validation set, so the
+                coverage guarantee holds independently for actives and inactives even on imbalanced data.
                 {% endif %}
             </div>
         {% endif %}
@@ -235,9 +237,10 @@
                         <p><strong>{{ task_names[j] }}:</strong> {{ preds[i][j] | round(3) if preds[i][j] is number else preds[i][j] }}{% if unc_std and unc_std[i] is not none and unc_std[i][j] is not none %} <span class="text-muted">± {{ unc_std[i][j] }}</span>{% endif %}{% if conformal and conformal.mode == 'regression' and conformal.intervals[i][j] is not none %} <span class="text-muted">({{ ((1 - conformal.alpha) * 100) | round(0, 'floor') | int }}% PI: {{ conformal.intervals[i][j][0] }} – {{ conformal.intervals[i][j][1] }})</span>{% endif %}
                         {%- if conformal and conformal.mode == 'classification' and conformal.categories[i][j] is not none %}
                             {% set cat = conformal.categories[i][j].cat %}
-                            {% if cat == 'positive' %}<span class="label label-success">Positive</span>
-                            {% elif cat == 'negative' %}<span class="label label-danger">Negative</span>
-                            {% else %}<span class="label label-warning">Uncertain</span>{% endif %}
+                            {% if cat == 'active' %}<span class="label label-success">Active</span>
+                            {% elif cat == 'inactive' %}<span class="label label-danger">Inactive</span>
+                            {% elif cat == 'uncertain' %}<span class="label label-warning">Uncertain</span>
+                            {% else %}<span class="label label-default">Indeterminate</span>{% endif %}
                         {%- endif %}</p>
                     {% endfor %}
                     {% if applicability and applicability[i] is not none %}

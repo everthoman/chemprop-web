@@ -161,6 +161,101 @@ def conformal_calibration_feasible(n_cal: int, alpha: float) -> bool:
     return n_cal >= 1 and math.ceil((n_cal + 1) * (1 - alpha)) <= n_cal
 
 
+def mondrian_conformal_thresholds(cal_probs, cal_labels, alpha):
+    """Class-conditional (Mondrian) conformal thresholds for binary classification.
+
+    QSAR datasets are typically imbalanced, where a single marginal conformal
+    threshold can satisfy its guarantee on the majority (inactive) class while
+    under-covering the rare actives. Mondrian conformal calibrates a separate
+    threshold per class so ~(1-alpha) coverage holds independently within actives
+    and inactives.
+
+    Score is ``1 - p_trueclass``; per class ``c`` the threshold ``q_c`` is the
+    ``ceil((n_c+1)(1-alpha))/n_c`` empirical quantile of that class's calibration
+    scores. A query's set then includes class ``c`` iff ``1 - p_c <= q_c``.
+
+    :param cal_probs: per-datapoint list of per-task P(active).
+    :param cal_labels: per-datapoint list of per-task true label (0/1, or None).
+    :return: per-task dict with q_active/q_inactive (None if no calibration points
+             for that class) and the per-class calibration counts.
+    """
+    if not cal_probs:
+        return []
+    n_tasks = max((len(r) for r in cal_probs if r is not None), default=0)
+
+    def _qhat(scores):
+        n = len(scores)
+        if n == 0:
+            return None
+        q_level = math.ceil((n + 1) * (1 - alpha)) / n
+        if q_level >= 1.0:
+            return 1.0  # too few points to calibrate -> include the class always
+        return float(np.quantile(scores, q_level, method='higher'))
+
+    per_task = []
+    for t in range(n_tasks):
+        s_active, s_inactive = [], []
+        for i in range(len(cal_probs)):
+            if cal_probs[i] is None or cal_labels[i] is None:
+                continue
+            y = cal_labels[i][t] if t < len(cal_labels[i]) else None
+            if y is None:
+                continue
+            try:
+                p = float(cal_probs[i][t])
+            except (TypeError, ValueError, IndexError):
+                continue
+            if int(round(float(y))) == 1:
+                s_active.append(1.0 - p)
+            else:
+                s_inactive.append(p)
+        per_task.append({
+            'q_active': _qhat(s_active), 'q_inactive': _qhat(s_inactive),
+            'n_active': len(s_active), 'n_inactive': len(s_inactive),
+        })
+    return per_task
+
+
+def mondrian_category(p, thr):
+    """Conformal label for one binary task given P(active) and its thresholds.
+
+    Returns 'active'/'inactive' (confident), 'uncertain' (both classes plausible),
+    or 'none' (neither plausible at this confidence — an atypical point).
+    """
+    try:
+        p = float(p)
+    except (TypeError, ValueError):
+        return None
+    qa, qi = thr.get('q_active'), thr.get('q_inactive')
+    active_in = qa is not None and (1.0 - p) <= qa
+    inactive_in = qi is not None and p <= qi
+    if active_in and not inactive_in:
+        return 'active'
+    if inactive_in and not active_in:
+        return 'inactive'
+    if active_in and inactive_in:
+        return 'uncertain'
+    return 'none'
+
+
+def load_calibration_data(cal_path, task_names):
+    """Read a saved conformal calibration CSV (``smiles`` + task columns) into a
+    list-of-lists SMILES (for make_predictions) and per-task integer labels."""
+    smiles, labels = [], []
+    with open(cal_path) as f:
+        for row in csv.DictReader(f):
+            smiles.append([row.get('smiles', '')])
+            lab = []
+            for tn in task_names:
+                v = (row.get(tn) or '').strip()
+                try:
+                    lab.append(int(round(float(v))) if v != '' else None)
+                except ValueError:
+                    lab.append(None)
+            labels.append(lab)
+    return smiles, labels
+
+
 class _NumpyEncoder(json.JSONEncoder):
     """JSON encoder that understands numpy scalar/array types."""
     def default(self, obj):
@@ -447,35 +542,32 @@ def _compute_train_visualization(ckpt_id, model_paths, data_path, id_col, ignore
                     for s, t in zip(val_smiles, val_targets):
                         cwriter.writerow([s, *['' if v is None else v for v in t]])
 
-                cal_method = 'conformal_regression' if dataset_type == 'regression' else 'conformal'
-                conf_arguments = [
-                    '--test_path', 'None',
-                    '--preds_path', os.path.join(app.config['TEMP_FOLDER'], 'train_conformal_preds.csv'),
-                    '--checkpoint_paths', *model_paths,
-                    '--smiles_columns', 'smiles',
-                    '--calibration_path', cal_path,
-                    '--calibration_method', cal_method,
-                    '--conformal_alpha', str(conformal_alpha),
-                    # See note above: avoid worker-process DataLoader in this thread.
-                    '--num_workers', '0',
-                ]
-                if not args.cuda:
-                    conf_arguments.append('--no_cuda')
-                elif hasattr(args, 'gpu') and args.gpu is not None:
-                    conf_arguments += ['--gpu', str(args.gpu)]
-                if args.features_generator is not None:
-                    conf_arguments += ['--features_generator', *args.features_generator]
-                    if not args.features_scaling:
-                        conf_arguments.append('--no_features_scaling')
-
-                conf_args = PredictArgs().parse_args(conf_arguments)
-                conf_preds, conf_unc = make_predictions(
-                    args=conf_args, smiles=to_smiles_list(test_split), return_uncertainty=True)
-                test_targets_c = test_split.targets()
-                n_tasks = len(args.task_names)
-
-                per_task = []
                 if dataset_type == 'regression':
+                    conf_arguments = [
+                        '--test_path', 'None',
+                        '--preds_path', os.path.join(app.config['TEMP_FOLDER'], 'train_conformal_preds.csv'),
+                        '--checkpoint_paths', *model_paths,
+                        '--smiles_columns', 'smiles',
+                        '--calibration_path', cal_path,
+                        '--calibration_method', 'conformal_regression',
+                        '--conformal_alpha', str(conformal_alpha),
+                        # See note above: avoid worker-process DataLoader in this thread.
+                        '--num_workers', '0',
+                    ]
+                    if not args.cuda:
+                        conf_arguments.append('--no_cuda')
+                    elif hasattr(args, 'gpu') and args.gpu is not None:
+                        conf_arguments += ['--gpu', str(args.gpu)]
+                    if args.features_generator is not None:
+                        conf_arguments += ['--features_generator', *args.features_generator]
+                        if not args.features_scaling:
+                            conf_arguments.append('--no_features_scaling')
+
+                    conf_args = PredictArgs().parse_args(conf_arguments)
+                    conf_preds, conf_unc = make_predictions(
+                        args=conf_args, smiles=to_smiles_list(test_split), return_uncertainty=True)
+                    test_targets_c = test_split.targets()
+                    per_task = []
                     for ti, name in enumerate(args.task_names):
                         covered = total = 0
                         widths = []
@@ -498,46 +590,50 @@ def _compute_train_visualization(ckpt_id, model_paths, data_path, id_col, ignore
                             'mean_width': round(float(np.mean(widths)), 3) if widths else None,
                             'n': total,
                         })
-                else:  # classification: in_set / out_set indicators per task
+                    conformal_info = {'enabled': True, 'alpha': conformal_alpha, 'n_cal': n_cal,
+                                      'mode': 'regression', 'per_task': per_task}
+                else:
+                    # Classification: Mondrian (class-conditional) conformal. Calibrate a
+                    # per-class threshold on the validation set's plain probabilities, then
+                    # measure per-class coverage on the independent test split, reusing the
+                    # probabilities already predicted for the ROC.
+                    val_preds = make_predictions(args=pred_args, smiles=to_smiles_list(val_split),
+                                                 model_objects=preloaded, return_uncertainty=False)
+                    thr = mondrian_conformal_thresholds(val_preds, val_split.targets(), conformal_alpha)
+                    test_targets_c = test_split.targets()
+                    per_task = []
                     for ti, name in enumerate(args.task_names):
-                        total = 0
-                        confident_correct = confident_total = 0
-                        cats = {'positive': 0, 'uncertain': 0, 'negative': 0}
-                        for j in range(len(conf_preds)):
+                        t = thr[ti] if ti < len(thr) else {'q_active': None, 'q_inactive': None}
+                        cov_a = cov_i = na = ni = 0
+                        cats = {'active': 0, 'inactive': 0, 'uncertain': 0, 'none': 0}
+                        for j in range(len(test_preds)):
+                            if test_preds[j] is None:
+                                continue
+                            try:
+                                p = float(test_preds[j][ti])
+                            except (TypeError, ValueError, IndexError):
+                                continue
+                            cat = mondrian_category(p, t)
+                            if cat:
+                                cats[cat] += 1
                             yt = test_targets_c[j][ti]
                             if yt is None:
                                 continue
-                            try:
-                                in_set = int(round(float(conf_unc[j][ti])))
-                                out_set = int(round(float(conf_unc[j][ti + n_tasks])))
-                            except (TypeError, ValueError, IndexError):
-                                continue
-                            total += 1
-                            label = int(yt)
-                            if in_set == 1:
-                                cats['positive'] += 1
-                                confident_total += 1
-                                confident_correct += (label == 1)
-                            elif out_set == 0:
-                                cats['negative'] += 1
-                                confident_total += 1
-                                confident_correct += (label == 0)
+                            active_in = t['q_active'] is not None and (1.0 - p) <= t['q_active']
+                            inactive_in = t['q_inactive'] is not None and p <= t['q_inactive']
+                            if int(round(float(yt))) == 1:
+                                na += 1; cov_a += active_in
                             else:
-                                cats['uncertain'] += 1
+                                ni += 1; cov_i += inactive_in
                         per_task.append({
                             'name': name,
+                            'active_coverage': round(cov_a / na, 3) if na else None,
+                            'inactive_coverage': round(cov_i / ni, 3) if ni else None,
+                            'n_active': na, 'n_inactive': ni,
                             'categories': cats,
-                            'confident_accuracy': round(confident_correct / confident_total, 3) if confident_total else None,
-                            'n': total,
                         })
-
-                conformal_info = {
-                    'enabled': True,
-                    'alpha': conformal_alpha,
-                    'n_cal': n_cal,
-                    'mode': dataset_type,
-                    'per_task': per_task,
-                }
+                    conformal_info = {'enabled': True, 'alpha': conformal_alpha, 'n_cal': n_cal,
+                                      'mode': 'classification', 'method': 'mondrian', 'per_task': per_task}
 
     except Exception as e:
         viz_status = 'error'
@@ -1361,25 +1457,33 @@ def predict():
         else:
             use_conformal = True
 
-    # Build arguments. Conformal and ensemble std-dev are mutually exclusive output
-    # modes (chemprop rejects an uncertainty method alongside conformal regression);
-    # when conformal is active it takes precedence.
+    # Regression conformal uses chemprop's conformal_regression directly. Classification
+    # conformal uses class-conditional (Mondrian) calibration computed here from plain
+    # probabilities, so it just needs predictions on the query and calibration sets.
+    use_conformal_reg = use_conformal and train_args.dataset_type == 'regression'
+    use_conformal_cls = use_conformal and train_args.dataset_type == 'classification'
+    cal_smiles = cal_labels = None
+    if use_conformal_cls:
+        cal_smiles, cal_labels = load_calibration_data(cal_path, task_names)
+
+    # Conformal and ensemble std-dev are mutually exclusive output modes; conformal
+    # takes precedence. Query uncertainty is only returned for regression-conformal
+    # (intervals) or the ensemble ± std.
     ensemble_unc = len(model_paths) > 1 and not use_conformal
-    return_unc = ensemble_unc or use_conformal
+    return_unc = ensemble_unc or use_conformal_reg
     arguments = [
         '--test_path', 'None',
         '--preds_path', os.path.join(app.config['TEMP_FOLDER'], app.config['PREDICTIONS_FILENAME']),
         '--checkpoint_paths', *model_paths
     ]
-    if use_conformal:
-        cal_method = 'conformal_regression' if train_args.dataset_type == 'regression' else 'conformal'
+    if use_conformal_reg:
         arguments += [
             # Name the calibration file's SMILES column explicitly: when predicting from
             # an in-memory SMILES list there is no test CSV to auto-detect it from, so
             # smiles_columns would otherwise be [None] and the calibration load would fail.
             '--smiles_columns', 'smiles',
             '--calibration_path', cal_path,
-            '--calibration_method', cal_method,
+            '--calibration_method', 'conformal_regression',
             '--conformal_alpha', str(conformal_alpha),
         ]
     elif ensemble_unc:
@@ -1409,7 +1513,7 @@ def predict():
 
     # Run predictions in a subprocess so they can be cancelled
     result_queue = _spawn.Queue()
-    pred_proc = _spawn.Process(target=_predict_worker, args=(arguments, smiles, result_queue, return_unc))
+    pred_proc = _spawn.Process(target=_predict_worker, args=(arguments, smiles, result_queue, return_unc, cal_smiles))
     pred_proc.start()
     ACTIVE_PROCESS = pred_proc
     TRAINING = 1
@@ -1434,6 +1538,7 @@ def predict():
         return render_predict(errors=[result['error']])
     preds = result['preds']
     raw_unc = result.get('unc')
+    cal_preds = result.get('cal_preds')
 
     if all(p is None for p in preds):
         return render_predict(errors=['All SMILES are invalid'])
@@ -1458,43 +1563,42 @@ def predict():
         [_var_to_std(row) for row in raw_unc] if raw_unc is not None else None)
 
     conformal_result = None
-    if use_conformal and raw_unc is not None:
-        if train_args.dataset_type == 'regression':
-            # raw_unc[i][t] is the half-interval; interval is [pred - half, pred + half].
-            intervals = []
-            for i, pred in enumerate(preds):
-                row = raw_unc[i] if raw_unc[i] is not None else []
-                cell = []
-                for ti in range(num_tasks):
-                    try:
-                        mid = float(pred[ti])
-                        half = float(row[ti])
-                        cell.append((round(mid - half, 3), round(mid + half, 3)))
-                    except (TypeError, ValueError, IndexError):
-                        cell.append(None)
-                intervals.append(cell)
-            conformal_result = {'mode': 'regression', 'alpha': conformal_alpha, 'intervals': intervals}
-        else:
-            # raw_unc[i] = [in_set_t1..in_set_tn, out_set_t1..out_set_tn] (0/1 indicators).
-            categories = []
-            for i in range(len(preds)):
-                row = raw_unc[i] if raw_unc[i] is not None else []
-                cell = []
-                for ti in range(num_tasks):
-                    try:
-                        in_set = int(round(float(row[ti])))
-                        out_set = int(round(float(row[ti + num_tasks])))
-                        if in_set == 1:
-                            cat = 'positive'
-                        elif out_set == 0:
-                            cat = 'negative'
-                        else:
-                            cat = 'uncertain'
-                        cell.append({'cat': cat, 'in_set': in_set, 'out_set': out_set})
-                    except (TypeError, ValueError, IndexError):
-                        cell.append(None)
-                categories.append(cell)
-            conformal_result = {'mode': 'classification', 'alpha': conformal_alpha, 'categories': categories}
+    if use_conformal_reg and raw_unc is not None:
+        # raw_unc[i][t] is the half-interval; interval is [pred - half, pred + half].
+        intervals = []
+        for i, pred in enumerate(preds):
+            row = raw_unc[i] if raw_unc[i] is not None else []
+            cell = []
+            for ti in range(num_tasks):
+                try:
+                    mid = float(pred[ti])
+                    half = float(row[ti])
+                    cell.append((round(mid - half, 3), round(mid + half, 3)))
+                except (TypeError, ValueError, IndexError):
+                    cell.append(None)
+            intervals.append(cell)
+        conformal_result = {'mode': 'regression', 'alpha': conformal_alpha, 'intervals': intervals}
+    elif use_conformal_cls and cal_preds is not None:
+        # Mondrian: per-class thresholds from the calibration set's probabilities,
+        # then a class-conditional prediction set for each query molecule.
+        thr = mondrian_conformal_thresholds(cal_preds, cal_labels, conformal_alpha)
+        categories = []
+        for i in range(len(preds)):
+            cell = []
+            for ti in range(num_tasks):
+                t = thr[ti] if ti < len(thr) else {'q_active': None, 'q_inactive': None}
+                try:
+                    p = float(preds[i][ti])
+                except (TypeError, ValueError, IndexError):
+                    cell.append(None)
+                    continue
+                active_in = t['q_active'] is not None and (1.0 - p) <= t['q_active']
+                inactive_in = t['q_inactive'] is not None and p <= t['q_inactive']
+                cell.append({'cat': mondrian_category(p, t),
+                             'active_in': int(active_in), 'inactive_in': int(inactive_in)})
+            categories.append(cell)
+        conformal_result = {'mode': 'classification', 'method': 'mondrian',
+                            'alpha': conformal_alpha, 'categories': categories}
 
     # Replace invalid smiles with message
     invalid_smiles_warning = 'Invalid SMILES String'
@@ -1534,7 +1638,7 @@ def predict():
                     conf_cols += [f'pi_low_{t}', f'pi_high_{t}']
             else:
                 for t in task_names:
-                    conf_cols += [f'conformal_{t}', f'in_set_{t}', f'out_set_{t}']
+                    conf_cols += [f'conformal_{t}', f'active_in_set_{t}', f'inactive_in_set_{t}']
         ad_cols = ['ad_similarity', 'ad_in_domain'] if applicability is not None else []
         header = (['id'] if has_ids else []) + ['smiles'] + task_names + std_cols + conf_cols + ad_cols
         writer.writerow(header)
@@ -1553,7 +1657,7 @@ def predict():
                         row.extend(['', ''] if cell is None else [cell[0], cell[1]])
                 else:
                     for cell in conformal_result['categories'][idx]:
-                        row.extend(['', '', ''] if cell is None else [cell['cat'], cell['in_set'], cell['out_set']])
+                        row.extend(['', '', ''] if cell is None else [cell['cat'], cell['active_in'], cell['inactive_in']])
             if applicability is not None:
                 ad = applicability[idx]
                 if ad is not None:

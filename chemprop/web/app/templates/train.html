@@ -396,21 +396,21 @@
             </table>
             <small class="text-muted">Empirical coverage is the fraction of held-out test molecules whose true value fell inside the conformal interval; it should land near the target.</small>
             {% else %}
-            <table class="table table-sm table-bordered" style="max-width:640px;">
-                <thead><tr><th>Task</th><th>Confident positive</th><th>Uncertain</th><th>Confident negative</th><th>Accuracy of confident calls</th></tr></thead>
+            <p class="text-muted" style="margin-bottom:6px;">Class-conditional (Mondrian) conformal — each class is calibrated separately so coverage holds independently for actives and inactives, which is important for imbalanced datasets.</p>
+            <table class="table table-sm table-bordered" style="max-width:680px;">
+                <thead><tr><th>Task</th><th>Active coverage (test)</th><th>Inactive coverage (test)</th><th>Prediction sets (active / uncertain / inactive / none)</th></tr></thead>
                 <tbody>
                     {% for t in conformal.per_task %}
                     <tr>
                         <td>{{ t.name }}</td>
-                        <td>{{ t.categories.positive }}</td>
-                        <td>{{ t.categories.uncertain }}</td>
-                        <td>{{ t.categories.negative }}</td>
-                        <td>{{ t.confident_accuracy if t.confident_accuracy is not none else '—' }} <small class="text-muted">(n={{ t.n }} test)</small></td>
+                        <td>{{ t.active_coverage if t.active_coverage is not none else '—' }} <small class="text-muted">(n={{ t.n_active }})</small></td>
+                        <td>{{ t.inactive_coverage if t.inactive_coverage is not none else '—' }} <small class="text-muted">(n={{ t.n_inactive }})</small></td>
+                        <td>{{ t.categories.active }} / {{ t.categories.uncertain }} / {{ t.categories.inactive }} / {{ t.categories.none }}</td>
                     </tr>
                     {% endfor %}
                 </tbody>
             </table>
-            <small class="text-muted">Counts of held-out test molecules in each conformal category; "accuracy of confident calls" is the fraction of confident positive/negative calls that match the true label.</small>
+            <small class="text-muted">Coverage is the fraction of held-out test molecules of each true class whose label is contained in the conformal set; both should land near the {{ ((1 - conformal.alpha) * 100) | round(0, 'floor') | int }}% target. "none" sets (neither class plausible) flag atypical molecules.</small>
             {% endif %}
         </div>
         {% endif %}
