@@ -54,11 +54,13 @@ Demo mode (`--demo`) exposes no accounts and is not password-protected.
 
 ### Data
 
-Upload CSV files with a header row. The first column must be SMILES; all other columns are treated as targets. If your file contains a non-numeric identifier column (e.g. `chembl_id`), enter its name in the optional **Identifier column** field on upload — it will be excluded from target validation. The same field on the Train page excludes the column from model targets and passes it through to the downloaded train/test predictions CSV. Datasets can be downloaded from the Data page using their display name (e.g. `lipophilicity.csv`). Dataset names can be renamed inline by clicking **Rename** next to any dataset. All datasets for the current user can be removed at once with the **Delete All** button.
+Upload CSV files with a header row. The first column must be SMILES; all other columns are treated as targets. If your file contains a non-numeric identifier column (e.g. `chembl_id`), enter its name in the optional **Identifier column** field on upload — it will be excluded from target validation. The same field on the Train page excludes the column from model targets and passes it through to the downloaded train/test predictions CSV. Datasets can be downloaded from the Data page using their display name (e.g. `lipophilicity.csv`). Dataset names can be renamed inline by clicking **Rename** next to any dataset. All datasets for the current user can be removed at once with the **Delete All** button. Datasets are uploaded only from this page (and model checkpoints only from the Checkpoints page); the Train, Hyperopt, and Predict pages just select from what is already uploaded.
 
 ### Train
 
-Select a dataset, optionally specify an **identifier column** (a column in your CSV containing compound names or IDs — it will be excluded from targets and passed through to the download CSV), choose regression or classification, set epochs and ensemble size, and click **Train**. Optionally upload a hyperparameter config JSON (from the Hyperopt page) to train with optimized settings. Optionally set an **early stopping patience** (number of epochs without improvement before training stops for that ensemble member; disabled by default).
+Select a dataset, optionally specify an **identifier column** (a column in your CSV containing compound names or IDs — it will be excluded from targets and passed through to the download CSV), choose regression or classification, set epochs and ensemble size, and click **Train**. Optionally upload a hyperparameter config JSON (from the Hyperopt page) to train with optimized settings.
+
+Optionally enable **early stopping**: tick *Enable early stopping* and set a **Window** (a number of consecutive epochs) and a **Stability band**. Each ensemble member stops once its validation metric stays within the band across the whole window — i.e. the curve has flattened — and keeps training while it still swings by more than the band. The best-validation checkpoint is always kept regardless of where it stops. Disabled by default.
 
 Optionally select **Additional molecule-level features** to augment the graph-based MPNN with precomputed molecular descriptors concatenated to the learned embedding before the output layer:
 - **None** (default) — MPNN graph features only.
@@ -84,7 +86,7 @@ Optionally enable **conformal prediction** with a target error rate **α** (defa
 
 Defaults: 50 epochs, ensemble size 3.
 
-Results persist when switching tabs. If you navigate away during training and return while it is still running, the progress bar resumes. When training finishes, the page reloads automatically to show the results.
+When training finishes the page shows **Training complete!** right away with the convergence chart and a *Generating plots…* spinner; the scatter/ROC plots and conformal report are computed in the background and appear when ready, so the checkpoint is usable on the Predict page immediately (before the plots finish). The form keeps your last-applied settings (dataset, split type, epochs, ensemble size, early-stopping and conformal options, checkpoint name, etc.) until you change them, so you can see what a finished run was trained on. Results persist when switching tabs; if you navigate away during training and return while it is still running, the progress bar resumes.
 
 ### Hyperopt
 
@@ -98,7 +100,9 @@ Runs Bayesian hyperparameter optimization (TPE) to find the best model settings 
    - **Basic** — depth, FFN layers, dropout, hidden size *(recommended always)*
    - **Learning rate** — max LR, LR warmup and schedule *(add if Basic alone is insufficient)*
 4. Click **Start** — the first half of trials explore randomly, the second half are guided by results so far
-5. When complete, download the **config JSON** and upload it on the Train page to train a final model with your chosen epochs and ensemble size
+5. When complete, download the **config JSON** (saved as `<dataset_name>_hyperopt.json`) and upload it on the Train page to train a final model with your chosen epochs and ensemble size
+
+The Hyperopt form also keeps your last-applied settings (dataset, trials, search parameters) until you change them.
 
 ### Checkpoints
 
