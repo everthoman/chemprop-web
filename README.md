@@ -1,4 +1,4 @@
-# chemprop-web v1.8.7
+# chemprop-web v1.8.8
 
 A maintained fork of [Chemprop v1.7.1](https://github.com/chemprop/chemprop/tree/v1.7.1) that keeps the browser-based web interface working with modern Python and library versions.
 
