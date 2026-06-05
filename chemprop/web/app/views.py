@@ -855,7 +855,7 @@ def train():
     LAST_TRAIN_SETTINGS[str(current_user_id() or '')] = {
         k: request.form.get(k, '') for k in (
             'dataName', 'idColumn', 'datasetType', 'splitType', 'featuresGenerator',
-            'epochs', 'ensembleSize', 'patience', 'minDelta',
+            'epochs', 'ensembleSize', 'patience', 'minDelta', 'seed',
             'conformalEnabled', 'conformalAlpha', 'checkpointName', 'gpu')
     }
 
@@ -891,6 +891,13 @@ def train():
     features_generator = request.form.get('featuresGenerator', 'none')
     use_progress_bar = request.form.get('useProgressBar', 'True') == 'True'
     conformal_enabled, conformal_alpha = parse_conformal_form(request.form)
+    # Random seed controls both the train/val/test split and the initial model
+    # weights, so a run is fully reproducible. Default 666.
+    seed_raw = request.form.get('seed', '').strip()
+    try:
+        seed = int(seed_raw) if seed_raw else 666
+    except ValueError:
+        seed = 666
 
     # Handle optional hyperopt config (content sent as hidden field via FileReader)
     config_content = request.form.get('configFileContent', '').strip()
@@ -907,6 +914,8 @@ def train():
         '--epochs', str(epochs),
         '--ensemble_size', str(ensemble_size),
         '--split_type', split_type,
+        '--seed', str(seed),
+        '--pytorch_seed', str(seed),
     ]
     if config_path is not None:
         train_arg_list += ['--config_path', config_path]

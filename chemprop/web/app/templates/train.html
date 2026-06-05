@@ -95,6 +95,9 @@
             <option value="10" {% if es == '10' %}selected{% endif %}>10</option>
         </select>
 
+        <h5>Random seed <small class="text-muted">(controls the train/val/test split and initial weights — fix it for reproducible runs)</small></h5>
+        <input type="number" name="seed" step="1" value="{{ settings.seed or '666' }}">
+
         <h5>Conformal prediction <small class="text-muted">(optional)</small></h5>
         {% set conf_on = settings.conformalEnabled == 'True' %}
         <input type="hidden" name="conformalEnabled" id="conformalEnabled" value="{{ 'True' if conf_on else 'False' }}">

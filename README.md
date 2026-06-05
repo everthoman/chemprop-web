@@ -84,7 +84,9 @@ A **Cancel** button is shown during training to stop the run early. A progress b
 
 Optionally enable **conformal prediction** with a target error rate **α** (default 0.1 ⇒ 90% coverage). This saves the model's held-out validation split as a calibration set alongside the checkpoint, so predictions made later can carry calibrated [conformal](https://arxiv.org/abs/2107.07511) intervals (regression) or label sets (classification). It works with any ensemble size, including a single model. The training results panel reports, on the independent test split, the **empirical coverage** and mean interval width (regression), or the breakdown of confident-positive / uncertain / confident-negative calls and the accuracy of the confident ones (classification). Conformal is skipped with a warning if the validation split is too small to calibrate at the chosen α.
 
-Defaults: 50 epochs, ensemble size 3.
+Set a **Random seed** (default 666) to control both the train/val/test split and the initial model weights, so a run is fully reproducible; change it to get a different split and a different ensemble.
+
+Defaults: 50 epochs, ensemble size 3, random seed 666.
 
 When training finishes the page shows **Training complete!** right away with the convergence chart and a *Generating plots…* spinner; the scatter/ROC plots and conformal report are computed in the background and appear when ready, so the checkpoint is usable on the Predict page immediately (before the plots finish). The form keeps your last-applied settings (dataset, split type, epochs, ensemble size, early-stopping and conformal options, checkpoint name, etc.) until you change them, so you can see what a finished run was trained on. Results persist when switching tabs; if you navigate away during training and return while it is still running, the progress bar resumes.
 
@@ -132,6 +134,7 @@ Each prediction also carries an **applicability domain** flag indicating whether
 - **Reworked early stopping** — early stopping is now an explicit **Enable early stopping** checkbox exposing a **Window** (epochs) and a **Stability band**. Training a model stops only once its validation metric stays within the band across the whole window (i.e. the curve has flattened); while it still swings by more than the band, training continues. Each ensemble member decides independently, and the strict-best checkpoint is always kept.
 - **Forms remember their settings** — the Train and Hyperopt pages repopulate every field (dataset, identifier column, dataset type, split type, features, epochs, ensemble size, early-stopping and conformal options, checkpoint name, GPU, and the hyperopt trials/search selection) with your last-applied values until you change them, so you can see what a finished run was trained on.
 - **Cleaner workflow pages** — data upload lives only on the Data tab and checkpoint upload only on the Checkpoints tab (removed from Train/Hyperopt/Predict); the redundant in-page headings on Train/Hyperopt/Predict were dropped; and the regression predicted-vs-experimental scatter now snaps its axes to whole-unit ticks.
+- **Configurable random seed** on the Train page (default 666) controlling both the train/val/test split and the initial model weights, for reproducible runs.
 - **Hyperopt config download** is now named `<dataset_name>_hyperopt.json` after the optimized dataset.
 
 ## Changes in v1.8.7
