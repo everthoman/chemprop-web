@@ -924,7 +924,7 @@ def cancel():
 
 
 # Endpoints reachable without being logged in.
-PUBLIC_ENDPOINTS = {'login', 'static'}
+PUBLIC_ENDPOINTS = {'login', 'static', 'receiver', 'cancel'}
 
 
 def current_user_id() -> Optional[int]:

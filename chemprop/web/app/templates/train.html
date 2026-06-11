@@ -314,7 +314,7 @@
                     }
 
                     if (data.val_curves) updateLiveConvergenceChart(data.val_curves);
-                } else if (wasTraining) {
+                } else if (wasTraining && data && data.training === 0) {
                     // Training just finished while we were watching from a reloaded tab — fetch results
                     wasTraining = false;
                     // GET-navigate (not reload) so we never re-submit the training POST
