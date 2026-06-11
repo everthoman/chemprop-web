@@ -45,6 +45,48 @@ LAST_TRAIN_SETTINGS = {}     # user_key -> last submitted Train form values, to 
 LAST_HYPEROPT_SETTINGS = {}  # user_key -> last submitted Hyperopt form values
 
 
+def _normalize_to_csv(path: str) -> None:
+    """Re-write a tab- or whitespace-separated file as a comma-separated CSV in place.
+
+    Detects the delimiter from the first line: tab takes priority, then comma (no-op),
+    then falls back to splitting on any whitespace (handles multi-space-separated files).
+    Strips a UTF-8 BOM if present, filters trailing blank rows, and writes Unix line endings.
+    """
+    with open(path, 'rb') as f:
+        has_bom = f.read(3) == b'\xef\xbb\xbf'
+    enc = 'utf-8-sig' if has_bom else 'utf-8'
+
+    with open(path, newline='', encoding=enc) as f:
+        first_line = f.readline()
+
+    if '\t' in first_line:
+        delimiter = '\t'
+    elif ',' in first_line and not has_bom:
+        return  # already clean comma-separated CSV
+    else:
+        delimiter = ',' if ',' in first_line else None  # BOM-only CSV or whitespace-split
+
+    rows = []
+    with open(path, newline='', encoding=enc) as f:
+        if delimiter:
+            for row in csv.reader(f, delimiter=delimiter):
+                if any(cell.strip() for cell in row):  # skip blank rows
+                    rows.append(row)
+        else:
+            for line in f:
+                stripped = line.rstrip('\r\n')
+                if stripped:
+                    rows.append(stripped.split())
+
+    # Pad rows shorter than the header with empty strings (missing values → treated as NaN).
+    if rows:
+        n_cols = len(rows[0])
+        rows = [row + [''] * (n_cols - len(row)) for row in rows]
+
+    with open(path, 'w', newline='', encoding='utf-8') as f:
+        csv.writer(f, lineterminator='\n').writerows(rows)
+
+
 def _find_non_numeric_columns(data_path: str, columns: List[str], sample_rows: int = 200) -> List[str]:
     """Scan a CSV's columns and return those containing any non-numeric values.
 
@@ -76,6 +118,72 @@ def _find_non_numeric_columns(data_path: str, columns: List[str], sample_rows: i
     except (OSError, csv.Error):
         return []
     return bad
+
+
+def _binarize_csv(data_path: str, task_names: List[str], method: str,
+                  param: float, out_path: str) -> List[dict]:
+    """Write a copy of data_path with target columns binarized (active=1 if value >= threshold).
+
+    method: 'mad'        -> threshold = median + param * MAD
+            'percentile' -> threshold = param-th percentile
+            'fixed'      -> threshold = param
+
+    Returns list of {name, threshold, n_active, n_inactive, n_total} per task.
+    """
+    with open(data_path, newline='') as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
+        fieldnames = list(reader.fieldnames)
+
+    stats = []
+    for col in task_names:
+        vals = []
+        for row in rows:
+            v = (row.get(col) or '').strip()
+            if v:
+                try:
+                    vals.append(float(v))
+                except ValueError:
+                    pass
+
+        if not vals:
+            stats.append({'name': col, 'threshold': None, 'n_active': 0, 'n_inactive': 0, 'n_total': 0})
+            continue
+
+        arr = np.array(vals)
+        if method == 'mad':
+            med = float(np.median(arr))
+            mad = float(np.median(np.abs(arr - med)))
+            threshold = med + param * mad
+        elif method == 'percentile':
+            threshold = float(np.percentile(arr, param))
+        else:
+            threshold = float(param)
+
+        n_active = n_inactive = 0
+        for row in rows:
+            v = (row.get(col) or '').strip()
+            if v:
+                try:
+                    b = 1 if float(v) >= threshold else 0
+                    row[col] = str(b)
+                    if b:
+                        n_active += 1
+                    else:
+                        n_inactive += 1
+                except ValueError:
+                    pass
+
+        stats.append({'name': col, 'threshold': round(threshold, 4),
+                      'n_active': n_active, 'n_inactive': n_inactive,
+                      'n_total': n_active + n_inactive})
+
+    with open(out_path, 'w', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    return stats
 
 
 def _parse_val_curves(log_path):
@@ -858,6 +966,7 @@ def login():
 
     if auth.verify_password(username, password):
         session.clear()
+        session.permanent = True
         session['user_id'] = db.get_or_create_user(username)
         session['username'] = username
         return redirect(url_for('home'))
@@ -953,7 +1062,8 @@ def train():
         k: request.form.get(k, '') for k in (
             'dataName', 'idColumn', 'datasetType', 'splitType', 'featuresGenerator',
             'epochs', 'ensembleSize', 'patience', 'minDelta', 'seed',
-            'conformalEnabled', 'conformalAlpha', 'checkpointName', 'gpu')
+            'conformalEnabled', 'conformalAlpha', 'checkpointName', 'gpu',
+            'binarizeEnabled', 'binarizeMethod', 'binarizeParam')
     }
 
     # Get arguments
@@ -995,6 +1105,18 @@ def train():
         seed = int(seed_raw) if seed_raw else 666
     except ValueError:
         seed = 666
+
+    # Auto-binarize settings (classification only)
+    binarize_enabled = request.form.get('binarizeEnabled', 'False') == 'True'
+    binarize_method = request.form.get('binarizeMethod', 'mad')
+    if binarize_method not in ('mad', 'percentile', 'fixed'):
+        binarize_method = 'mad'
+    _default_param = {'mad': 3.0, 'percentile': 80.0, 'fixed': 0.0}
+    binarize_param_raw = request.form.get('binarizeParam', '').strip()
+    try:
+        binarize_param = float(binarize_param_raw) if binarize_param_raw else _default_param[binarize_method]
+    except ValueError:
+        binarize_param = _default_param[binarize_method]
 
     # Handle optional hyperopt config (content sent as hidden field via FileReader)
     config_content = request.form.get('configFileContent', '').strip()
@@ -1052,9 +1174,42 @@ def train():
     unique_targets = {target for row in targets for target in row if target is not None}
 
     if dataset_type == 'classification' and len(unique_targets - {0, 1}) > 0:
-        errors.append('Selected classification dataset but not all labels are 0 or 1. Select regression instead.')
+        if binarize_enabled:
+            binarize_out = os.path.join(app.config['TEMP_FOLDER'], f'binarized_{data_name}.csv')
+            try:
+                binarize_stats = _binarize_csv(data_path, args.task_names, binarize_method, binarize_param, binarize_out)
+            except Exception as e:
+                errors.append(f'Auto-binarize failed: {e}')
+                return render_train(warnings=warnings, errors=errors)
 
-        return render_train(warnings=warnings, errors=errors)
+            degenerate = [s['name'] for s in binarize_stats
+                          if s['n_total'] > 0 and (s['n_active'] == 0 or s['n_inactive'] == 0)]
+            if degenerate:
+                errors.append(
+                    f'Auto-binarize produced all-one-class labels for: {", ".join(degenerate)}. '
+                    f'Try a different threshold method or parameter value.')
+                return render_train(warnings=warnings, errors=errors)
+
+            # Redirect training to the binarized file
+            data_path = binarize_out
+            train_arg_list[train_arg_list.index('--data_path') + 1] = binarize_out
+
+            _method_desc = {
+                'mad': f'median + {binarize_param}×MAD',
+                'percentile': f'≥ {binarize_param}th-percentile',
+                'fixed': f'≥ {binarize_param}',
+            }
+            parts = []
+            for s in binarize_stats:
+                pct = round(100 * s['n_active'] / s['n_total'], 1) if s['n_total'] else 0
+                parts.append(f"{s['name']}: threshold={s['threshold']}, "
+                              f"{s['n_active']} active / {s['n_inactive']} inactive ({pct}%)")
+            warnings.append(f"Auto-binarized ({_method_desc[binarize_method]}): {'; '.join(parts)}")
+        else:
+            errors.append(
+                'Selected classification dataset but not all labels are 0 or 1. '
+                'Enable auto-binarize above, or select regression instead.')
+            return render_train(warnings=warnings, errors=errors)
 
     if dataset_type == 'regression' and unique_targets <= {0, 1}:
         errors.append('Selected regression dataset but all labels are 0 or 1. Select classification instead.')
@@ -1778,6 +1933,7 @@ def upload_data(return_page: str):
     upload_id_col = request.form.get('idColumn', '').strip() or None
     with NamedTemporaryFile() as temp_file:
         dataset.save(temp_file.name)
+        _normalize_to_csv(temp_file.name)
         dataset_errors = validate_data(temp_file.name, ignore_columns=[upload_id_col] if upload_id_col else None)
 
         if len(dataset_errors) > 0:

@@ -4,6 +4,7 @@ These are accessible in a dictionary, with each line defining a key.
 """
 
 import os
+from datetime import timedelta
 
 import torch
 
@@ -21,5 +22,6 @@ TRAIN_TEST_PREDS_FILENAME = 'train_test_predictions.csv'
 DB_FILENAME = 'chemprop.sqlite3'
 CREDENTIALS_FILENAME = 'users_auth.json'  # JSON map of username -> password hash (no database)
 SECRET_KEY_FILENAME = '.flask_secret_key'  # persisted key used to sign session cookies
+PERMANENT_SESSION_LIFETIME = timedelta(days=30)
 CUDA = torch.cuda.is_available()
 GPUS = list(range(torch.cuda.device_count()))

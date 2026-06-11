@@ -29,6 +29,63 @@
         </div>
         <br>
 
+        <div id="binarizeSection" style="display:{% if dtype == 'classification' %}block{% else %}none{% endif %}; margin-top:6px;">
+            {% set bin_on = settings.binarizeEnabled == 'True' %}
+            <div class="checkbox" style="margin-top:0; margin-bottom:0;">
+                <label>
+                    <input type="checkbox" id="binarizeCheckbox" {% if bin_on %}checked{% endif %}>
+                    Auto-binarize continuous values
+                    <small class="text-muted">— assign active (1) / inactive (0) from activity measurements</small>
+                </label>
+            </div>
+            <input type="hidden" name="binarizeEnabled" id="binarizeEnabled" value="{{ 'True' if bin_on else 'False' }}">
+            <div id="binarizeOptions" style="display:{% if bin_on %}block{% else %}none{% endif %}; margin-left:20px; margin-top:4px;">
+                <label style="font-weight:normal;">Method
+                    {% set bm = settings.binarizeMethod or 'mad' %}
+                    <select name="binarizeMethod" id="binarizeMethod" style="margin-left:8px;">
+                        <option value="mad" {% if bm == 'mad' %}selected{% endif %}>MAD (median + k × MAD)</option>
+                        <option value="percentile" {% if bm == 'percentile' %}selected{% endif %}>Percentile (top N% active)</option>
+                        <option value="fixed" {% if bm == 'fixed' %}selected{% endif %}>Fixed threshold</option>
+                    </select>
+                </label>
+                <br>
+                <label style="font-weight:normal;"><span id="binarizeParamLabel">k (multiplier)</span>
+                    <input type="number" name="binarizeParam" id="binarizeParam" step="any"
+                           value="{{ settings.binarizeParam or '3.0' }}" style="width:90px; margin-left:8px;">
+                </label>
+                <small class="text-muted" id="binarizeParamHelp">&nbsp; active = value ≥ median + k × MAD</small>
+            </div>
+        </div>
+        <script>
+            $(document).ready(function() {
+                $('input[name="datasetType"]').change(function() {
+                    $('#binarizeSection').toggle($(this).val() === 'classification');
+                });
+                $('#binarizeCheckbox').change(function() {
+                    var on = $(this).is(':checked');
+                    $('#binarizeEnabled').val(on ? 'True' : 'False');
+                    $('#binarizeOptions').toggle(on);
+                });
+                $('#binarizeMethod').change(function() {
+                    var defaults = {mad: '3.0', percentile: '80', fixed: ''};
+                    $('#binarizeParam').val(defaults[$(this).val()]);
+                    updateBinarizeLabels($(this).val());
+                });
+                function updateBinarizeLabels(method) {
+                    var labels = {
+                        mad: ['k (multiplier)', '  active = value ≥ median + k × MAD'],
+                        percentile: ['percentile cutoff', '  active = value ≥ this percentile (e.g. 80 → top 20% are active)'],
+                        fixed: ['threshold', '  active = value ≥ threshold']
+                    };
+                    var m = method || $('#binarizeMethod').val();
+                    $('#binarizeParamLabel').text(labels[m][0]);
+                    $('#binarizeParamHelp').text(labels[m][1]);
+                }
+                updateBinarizeLabels();
+            });
+        </script>
+        <br>
+
         <h5>Split type</h5>
         {% set stype = settings.splitType or 'random' %}
         <div class="btn-group" id="splitTypeSelect" data-toggle="buttons">
