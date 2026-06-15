@@ -543,13 +543,15 @@ def _compute_train_visualization(ckpt_id, model_paths, data_path, id_col, ignore
                         cwriter.writerow([s, *['' if v is None else v for v in t]])
 
                 if dataset_type == 'regression':
+                    is_quantile = getattr(args, 'loss_function', None) == 'quantile_interval'
+                    conf_cal_method = 'conformal_quantile_regression' if is_quantile else 'conformal_regression'
                     conf_arguments = [
                         '--test_path', 'None',
                         '--preds_path', os.path.join(app.config['TEMP_FOLDER'], 'train_conformal_preds.csv'),
                         '--checkpoint_paths', *model_paths,
                         '--smiles_columns', 'smiles',
                         '--calibration_path', cal_path,
-                        '--calibration_method', 'conformal_regression',
+                        '--calibration_method', conf_cal_method,
                         '--conformal_alpha', str(conformal_alpha),
                         # See note above: avoid worker-process DataLoader in this thread.
                         '--num_workers', '0',
@@ -591,7 +593,8 @@ def _compute_train_visualization(ckpt_id, model_paths, data_path, id_col, ignore
                             'n': total,
                         })
                     conformal_info = {'enabled': True, 'alpha': conformal_alpha, 'n_cal': n_cal,
-                                      'mode': 'regression', 'per_task': per_task}
+                                      'mode': 'regression', 'per_task': per_task,
+                                      'interval_type': 'quantile' if is_quantile else 'standard'}
                 else:
                     # Classification: Mondrian (class-conditional) conformal. Calibrate a
                     # per-class threshold on the validation set's plain probabilities, then
@@ -952,7 +955,7 @@ def train():
         k: request.form.get(k, '') for k in (
             'dataName', 'idColumn', 'datasetType', 'splitType', 'featuresGenerator',
             'epochs', 'ensembleSize', 'patience', 'minDelta', 'seed',
-            'conformalEnabled', 'conformalAlpha', 'checkpointName', 'gpu')
+            'conformalEnabled', 'conformalAlpha', 'lossFunction', 'checkpointName', 'gpu')
     }
 
     # Get arguments
@@ -987,6 +990,10 @@ def train():
     features_generator = request.form.get('featuresGenerator', 'none')
     use_progress_bar = request.form.get('useProgressBar', 'True') == 'True'
     conformal_enabled, conformal_alpha = parse_conformal_form(request.form)
+    loss_function = request.form.get('lossFunction', 'mse')
+    # quantile_interval only makes sense for regression with conformal enabled
+    if loss_function == 'quantile_interval' and (dataset_type != 'regression' or not conformal_enabled):
+        loss_function = 'mse'
     # Random seed controls both the train/val/test split and the initial model
     # weights, so a run is fully reproducible. Default 666.
     seed_raw = request.form.get('seed', '').strip()
@@ -1013,6 +1020,9 @@ def train():
         '--seed', str(seed),
         '--pytorch_seed', str(seed),
     ]
+    if loss_function == 'quantile_interval':
+        train_arg_list += ['--loss_function', 'quantile_interval',
+                           '--quantile_loss_alpha', str(conformal_alpha)]
     if config_path is not None:
         train_arg_list += ['--config_path', config_path]
     if gpu is not None:
@@ -1477,13 +1487,15 @@ def predict():
         '--checkpoint_paths', *model_paths
     ]
     if use_conformal_reg:
+        is_quantile_model = getattr(train_args, 'loss_function', None) == 'quantile_interval'
+        pred_cal_method = 'conformal_quantile_regression' if is_quantile_model else 'conformal_regression'
         arguments += [
             # Name the calibration file's SMILES column explicitly: when predicting from
             # an in-memory SMILES list there is no test CSV to auto-detect it from, so
             # smiles_columns would otherwise be [None] and the calibration load would fail.
             '--smiles_columns', 'smiles',
             '--calibration_path', cal_path,
-            '--calibration_method', 'conformal_regression',
+            '--calibration_method', pred_cal_method,
             '--conformal_alpha', str(conformal_alpha),
         ]
     elif ensemble_unc:
