@@ -369,7 +369,17 @@ def _compute_train_visualization(ckpt_id, model_paths, data_path, id_col, ignore
         tt_path = os.path.join(app.config['CHECKPOINT_FOLDER'], f'{ckpt_id}_train_test_preds.csv')
 
         if dataset_type == 'regression':
-            if _use_unc:
+            is_quantile = getattr(args, 'loss_function', None) == 'quantile_interval'
+            # For quantile models task_names is doubled (['pKi','pKi']); derive the
+            # display names (undoubled) and the number of actual targets.
+            if is_quantile:
+                n_actual = args.num_tasks // 2
+                display_task_names = args.task_names[:n_actual]
+            else:
+                n_actual = args.num_tasks
+                display_task_names = args.task_names
+
+            if _use_unc and not is_quantile:
                 train_preds, train_unc = _predict(train_split)
                 test_preds, test_unc = _predict(test_split)
                 train_std = [_tt_var_to_std(r) for r in train_unc]
@@ -396,13 +406,30 @@ def _compute_train_visualization(ckpt_id, model_paths, data_path, id_col, ignore
                 return {'r2': f'{r2:.3f}', 'rmse': f'{rmse:.3f}', 'mae': f'{mae:.3f}', 'n': len(pts)}
 
             plot_data = []
-            for i, task_name in enumerate(args.task_names):
-                train_pts = [[train_targets[j][i], train_preds[j][i], train_smiles[j]]
-                             for j in range(len(train_preds))
-                             if train_preds[j] is not None and train_targets[j][i] is not None]
-                test_pts = [[test_targets[j][i], test_preds[j][i], test_smiles[j]]
-                            for j in range(len(test_preds))
-                            if test_preds[j] is not None and test_targets[j][i] is not None]
+            for i, task_name in enumerate(display_task_names):
+                # For quantile models use the midpoint (average of lower and upper bound)
+                # for the scatter plot so it is comparable to the true target.
+                if is_quantile:
+                    def _mid(prow, idx):
+                        try:
+                            return (float(prow[idx]) + float(prow[idx + n_actual])) / 2
+                        except (TypeError, ValueError, IndexError):
+                            return None
+                    train_pts = [[train_targets[j][i], _mid(train_preds[j], i), train_smiles[j]]
+                                 for j in range(len(train_preds))
+                                 if train_preds[j] is not None and train_targets[j][i] is not None
+                                 and _mid(train_preds[j], i) is not None]
+                    test_pts  = [[test_targets[j][i],  _mid(test_preds[j],  i), test_smiles[j]]
+                                 for j in range(len(test_preds))
+                                 if test_preds[j] is not None and test_targets[j][i] is not None
+                                 and _mid(test_preds[j], i) is not None]
+                else:
+                    train_pts = [[train_targets[j][i], train_preds[j][i], train_smiles[j]]
+                                 for j in range(len(train_preds))
+                                 if train_preds[j] is not None and train_targets[j][i] is not None]
+                    test_pts = [[test_targets[j][i], test_preds[j][i], test_smiles[j]]
+                                for j in range(len(test_preds))
+                                if test_preds[j] is not None and test_targets[j][i] is not None]
                 plot_data.append({
                     'name': task_name,
                     'train': train_pts,
@@ -414,8 +441,13 @@ def _compute_train_visualization(ckpt_id, model_paths, data_path, id_col, ignore
             with open(tt_path, 'w', newline='') as f:
                 writer = csv.writer(f)
                 header = (['id'] if id_col else []) + ['smiles', 'split']
-                for name in args.task_names:
-                    header += [name, f'pred_{name}']
+                if is_quantile:
+                    # Write lower and upper bounds with distinct column names.
+                    for name in display_task_names:
+                        header += [name, f'pred_{name}_lower', f'pred_{name}_upper']
+                else:
+                    for name in args.task_names:
+                        header += [name, f'pred_{name}']
                 if train_std is not None:
                     for name in args.task_names:
                         header.append(f'std_{name}')
@@ -428,13 +460,24 @@ def _compute_train_visualization(ckpt_id, model_paths, data_path, id_col, ignore
                         if preds_list[j] is None:
                             continue
                         row = ([ids[j]] if id_col else []) + [smi_list[j], split_label]
-                        for i in range(len(args.task_names)):
-                            t_val = tgts[j][i]
-                            p_val = preds_list[j][i]
-                            row += [
-                                round(t_val, 3) if t_val is not None else '',
-                                round(p_val, 3) if p_val is not None else '',
-                            ]
+                        if is_quantile:
+                            for i in range(n_actual):
+                                t_val = tgts[j][i]
+                                lo = preds_list[j][i]
+                                hi = preds_list[j][i + n_actual]
+                                row += [
+                                    round(t_val, 3) if t_val is not None else '',
+                                    round(lo, 3) if lo is not None else '',
+                                    round(hi, 3) if hi is not None else '',
+                                ]
+                        else:
+                            for i in range(len(args.task_names)):
+                                t_val = tgts[j][i]
+                                p_val = preds_list[j][i]
+                                row += [
+                                    round(t_val, 3) if t_val is not None else '',
+                                    round(p_val, 3) if p_val is not None else '',
+                                ]
                         if std_list is not None:
                             srow = std_list[j] if std_list[j] is not None else [None] * len(args.task_names)
                             row += [v if v is not None else '' for v in srow]
@@ -1036,8 +1079,11 @@ def train():
             train_arg_list.append('--no_features_scaling')
     args = TrainArgs().parse_args(train_arg_list)
 
-    # Get task names
-    args.task_names = get_task_names(path=data_path, smiles_columns=args.smiles_columns, ignore_columns=ignore_cols or None)
+    # Get task names. Quantile interval models need 2× task names internally
+    # (one per quantile bound); cross_validate handles this via loss_function arg.
+    args.task_names = get_task_names(path=data_path, smiles_columns=args.smiles_columns,
+                                     ignore_columns=ignore_cols or None,
+                                     loss_function=loss_function if loss_function == 'quantile_interval' else None)
 
     # Safety catch: scan task columns for non-numeric values (likely an undeclared identifier column)
     non_numeric_cols = _find_non_numeric_columns(data_path, args.task_names)
