@@ -27,7 +27,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath
 
 from chemprop.args import PredictArgs, TrainArgs, HyperoptArgs
 from chemprop.constants import MODEL_FILE_NAME, TRAIN_LOGGER_NAME
-from chemprop.data import get_data, get_header, get_smiles, get_task_names, validate_data, split_data
+from chemprop.data import get_data, get_header, get_smiles, get_task_names, validate_data, split_data, empty_cache
 from chemprop.train import make_predictions, run_training
 from chemprop.utils import create_logger, load_task_names, load_args
 from chemprop.web.app.atom_attribution import compute_attributions
@@ -748,6 +748,16 @@ def _compute_train_visualization(ckpt_id, model_paths, data_path, id_col, ignore
         plot_data = None
         conformal_info = None
         warnings.append(f'Could not generate visualization: {e}')
+
+    # Release model weights and molecule-graph caches held by this thread.
+    # SMILES_TO_GRAPH / SMILES_TO_MOL are process-global and never auto-cleared;
+    # without this they accumulate across every training job and cause the server
+    # to grow to several GB after a few runs.
+    try:
+        del preloaded
+    except NameError:
+        pass
+    empty_cache()
 
     _write_results_json(ckpt_id, {'dataset_type': dataset_type, 'plot_data': plot_data,
                                   'val_curves': val_curves, 'conformal': conformal_info,
