@@ -307,7 +307,10 @@ def _compute_train_visualization(ckpt_id, model_paths, data_path, id_col, ignore
             args=args,
         )
 
-        _use_unc = len(model_paths) > 1
+        # Quantile models have 2*n_tasks outputs; ensemble uncertainty doesn't apply.
+        _is_quantile_early = (dataset_type == 'regression' and
+                              getattr(args, 'loss_function', None) == 'quantile_interval')
+        _use_unc = len(model_paths) > 1 and not _is_quantile_early
         pred_arguments = [
             '--test_path', 'None',
             '--preds_path', os.path.join(app.config['TEMP_FOLDER'], 'train_plot_preds.csv'),
@@ -407,22 +410,18 @@ def _compute_train_visualization(ckpt_id, model_paths, data_path, id_col, ignore
 
             plot_data = []
             for i, task_name in enumerate(display_task_names):
-                # For quantile models use the midpoint (average of lower and upper bound)
-                # for the scatter plot so it is comparable to the true target.
+                # For quantile models make_predictions already returns midpoints
+                # (ConformalQuantileRegressionPredictor reformats [lower, upper] → midpoint),
+                # so use prow[i] directly — same as the standard regression path.
                 if is_quantile:
-                    def _mid(prow, idx):
-                        try:
-                            return (float(prow[idx]) + float(prow[idx + n_actual])) / 2
-                        except (TypeError, ValueError, IndexError):
-                            return None
-                    train_pts = [[train_targets[j][i], _mid(train_preds[j], i), train_smiles[j]]
+                    train_pts = [[train_targets[j][i], float(train_preds[j][i]), train_smiles[j]]
                                  for j in range(len(train_preds))
                                  if train_preds[j] is not None and train_targets[j][i] is not None
-                                 and _mid(train_preds[j], i) is not None]
-                    test_pts  = [[test_targets[j][i],  _mid(test_preds[j],  i), test_smiles[j]]
+                                 and train_preds[j][i] is not None]
+                    test_pts  = [[test_targets[j][i],  float(test_preds[j][i]),  test_smiles[j]]
                                  for j in range(len(test_preds))
                                  if test_preds[j] is not None and test_targets[j][i] is not None
-                                 and _mid(test_preds[j], i) is not None]
+                                 and test_preds[j][i] is not None]
                 else:
                     train_pts = [[train_targets[j][i], train_preds[j][i], train_smiles[j]]
                                  for j in range(len(train_preds))
@@ -442,9 +441,8 @@ def _compute_train_visualization(ckpt_id, model_paths, data_path, id_col, ignore
                 writer = csv.writer(f)
                 header = (['id'] if id_col else []) + ['smiles', 'split']
                 if is_quantile:
-                    # Write lower and upper bounds with distinct column names.
                     for name in display_task_names:
-                        header += [name, f'pred_{name}_lower', f'pred_{name}_upper']
+                        header += [name, f'pred_{name}']
                 else:
                     for name in args.task_names:
                         header += [name, f'pred_{name}']
@@ -463,12 +461,10 @@ def _compute_train_visualization(ckpt_id, model_paths, data_path, id_col, ignore
                         if is_quantile:
                             for i in range(n_actual):
                                 t_val = tgts[j][i]
-                                lo = preds_list[j][i]
-                                hi = preds_list[j][i + n_actual]
+                                mid = preds_list[j][i]
                                 row += [
                                     round(t_val, 3) if t_val is not None else '',
-                                    round(lo, 3) if lo is not None else '',
-                                    round(hi, 3) if hi is not None else '',
+                                    round(mid, 3) if mid is not None else '',
                                 ]
                         else:
                             for i in range(len(args.task_names)):
@@ -579,14 +575,20 @@ def _compute_train_visualization(ckpt_id, model_paths, data_path, id_col, ignore
                 cal_path = conformal_calibration_path(ckpt_id)
                 val_smiles = flat_smiles(val_split)
                 val_targets = val_split.targets()
+                # For quantile models task_names is doubled (['pKi','pKi']); calibration
+                # file only needs the original (undoubled) target columns.
+                if _is_quantile_early:
+                    cal_task_names = args.task_names[:args.num_tasks // 2]
+                else:
+                    cal_task_names = args.task_names
                 with open(cal_path, 'w', newline='') as f:
                     cwriter = csv.writer(f)
-                    cwriter.writerow(['smiles', *args.task_names])
+                    cwriter.writerow(['smiles', *cal_task_names])
                     for s, t in zip(val_smiles, val_targets):
                         cwriter.writerow([s, *['' if v is None else v for v in t]])
 
                 if dataset_type == 'regression':
-                    is_quantile = getattr(args, 'loss_function', None) == 'quantile_interval'
+                    is_quantile = _is_quantile_early
                     conf_cal_method = 'conformal_quantile_regression' if is_quantile else 'conformal_regression'
                     conf_arguments = [
                         '--test_path', 'None',
@@ -613,7 +615,10 @@ def _compute_train_visualization(ckpt_id, model_paths, data_path, id_col, ignore
                         args=conf_args, smiles=to_smiles_list(test_split), return_uncertainty=True)
                     test_targets_c = test_split.targets()
                     per_task = []
-                    for ti, name in enumerate(args.task_names):
+                    # For quantile models display_task_names is undoubled; for standard
+                    # regression it equals args.task_names.
+                    conf_task_names = display_task_names if is_quantile else args.task_names
+                    for ti, name in enumerate(conf_task_names):
                         covered = total = 0
                         widths = []
                         for j in range(len(conf_preds)):
@@ -1037,6 +1042,11 @@ def train():
     # quantile_interval only makes sense for regression with conformal enabled
     if loss_function == 'quantile_interval' and (dataset_type != 'regression' or not conformal_enabled):
         loss_function = 'mse'
+    # Pinball loss values are ~10× smaller than MSE, so the default min_delta=0.01
+    # triggers early stopping after only a few epochs for quantile models.
+    # Unconditionally zero it out — patience alone controls early stopping.
+    if loss_function == 'quantile_interval':
+        min_delta = 0.0
     # Random seed controls both the train/val/test split and the initial model
     # weights, so a run is fully reproducible. Default 666.
     seed_raw = request.form.get('seed', '').strip()
