@@ -19,16 +19,7 @@ def train_worker(train_arg_list, task_names, data_path, ignore_cols, id_col, sav
     args.task_names = task_names
     args.patience = patience
     args.min_delta = min_delta
-    # cross_validate sets quantiles from num_tasks; replicate that here since
-    # we call run_training directly.
-    if args.loss_function == 'quantile_interval':
-        n = args.num_tasks // 2
-        args.quantiles = [args.quantile_loss_alpha / 2] * n + [1 - args.quantile_loss_alpha / 2] * n
-    # For quantile models task_names is doubled (e.g. ['pKi','pKi']); pass it
-    # as target_columns so get_data duplicates the target column accordingly.
-    target_cols = task_names if args.loss_function == 'quantile_interval' else None
     data = get_data(path=data_path, smiles_columns=args.smiles_columns,
-                    target_columns=target_cols,
                     ignore_columns=ignore_cols or None, store_row=bool(id_col),
                     features_generator=args.features_generator)
     args.features_size = data.features_size()

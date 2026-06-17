@@ -33,8 +33,8 @@ from chemprop.utils import create_logger, load_task_names, load_args
 from chemprop.web.app.atom_attribution import compute_attributions
 from chemprop.web.app.applicability import ApplicabilityDomain, load_training_smiles
 
-TRAINING = mp.Value('i', 0)       # shared across gunicorn workers
-TRAINING_MODE = mp.Array('c', 32)  # 'train', 'hyperopt', 'predict', or empty
+TRAINING = 0
+TRAINING_MODE = ''  # 'train', 'hyperopt', or 'predict'
 PROGRESS = mp.Value('d', 0.0)
 CURRENT_LOG_PATH = ''
 ACTIVE_PROCESS = None
@@ -307,10 +307,7 @@ def _compute_train_visualization(ckpt_id, model_paths, data_path, id_col, ignore
             args=args,
         )
 
-        # Quantile models have 2*n_tasks outputs; ensemble uncertainty doesn't apply.
-        _is_quantile_early = (dataset_type == 'regression' and
-                              getattr(args, 'loss_function', None) == 'quantile_interval')
-        _use_unc = len(model_paths) > 1 and not _is_quantile_early
+        _use_unc = len(model_paths) > 1
         pred_arguments = [
             '--test_path', 'None',
             '--preds_path', os.path.join(app.config['TEMP_FOLDER'], 'train_plot_preds.csv'),
@@ -372,17 +369,7 @@ def _compute_train_visualization(ckpt_id, model_paths, data_path, id_col, ignore
         tt_path = os.path.join(app.config['CHECKPOINT_FOLDER'], f'{ckpt_id}_train_test_preds.csv')
 
         if dataset_type == 'regression':
-            is_quantile = getattr(args, 'loss_function', None) == 'quantile_interval'
-            # For quantile models task_names is doubled (['pKi','pKi']); derive the
-            # display names (undoubled) and the number of actual targets.
-            if is_quantile:
-                n_actual = args.num_tasks // 2
-                display_task_names = args.task_names[:n_actual]
-            else:
-                n_actual = args.num_tasks
-                display_task_names = args.task_names
-
-            if _use_unc and not is_quantile:
+            if _use_unc:
                 train_preds, train_unc = _predict(train_split)
                 test_preds, test_unc = _predict(test_split)
                 train_std = [_tt_var_to_std(r) for r in train_unc]
@@ -409,26 +396,13 @@ def _compute_train_visualization(ckpt_id, model_paths, data_path, id_col, ignore
                 return {'r2': f'{r2:.3f}', 'rmse': f'{rmse:.3f}', 'mae': f'{mae:.3f}', 'n': len(pts)}
 
             plot_data = []
-            for i, task_name in enumerate(display_task_names):
-                # For quantile models make_predictions already returns midpoints
-                # (ConformalQuantileRegressionPredictor reformats [lower, upper] → midpoint),
-                # so use prow[i] directly — same as the standard regression path.
-                if is_quantile:
-                    train_pts = [[train_targets[j][i], float(train_preds[j][i]), train_smiles[j]]
-                                 for j in range(len(train_preds))
-                                 if train_preds[j] is not None and train_targets[j][i] is not None
-                                 and train_preds[j][i] is not None]
-                    test_pts  = [[test_targets[j][i],  float(test_preds[j][i]),  test_smiles[j]]
-                                 for j in range(len(test_preds))
-                                 if test_preds[j] is not None and test_targets[j][i] is not None
-                                 and test_preds[j][i] is not None]
-                else:
-                    train_pts = [[train_targets[j][i], train_preds[j][i], train_smiles[j]]
-                                 for j in range(len(train_preds))
-                                 if train_preds[j] is not None and train_targets[j][i] is not None]
-                    test_pts = [[test_targets[j][i], test_preds[j][i], test_smiles[j]]
-                                for j in range(len(test_preds))
-                                if test_preds[j] is not None and test_targets[j][i] is not None]
+            for i, task_name in enumerate(args.task_names):
+                train_pts = [[train_targets[j][i], train_preds[j][i], train_smiles[j]]
+                             for j in range(len(train_preds))
+                             if train_preds[j] is not None and train_targets[j][i] is not None]
+                test_pts = [[test_targets[j][i], test_preds[j][i], test_smiles[j]]
+                            for j in range(len(test_preds))
+                            if test_preds[j] is not None and test_targets[j][i] is not None]
                 plot_data.append({
                     'name': task_name,
                     'train': train_pts,
@@ -440,12 +414,8 @@ def _compute_train_visualization(ckpt_id, model_paths, data_path, id_col, ignore
             with open(tt_path, 'w', newline='') as f:
                 writer = csv.writer(f)
                 header = (['id'] if id_col else []) + ['smiles', 'split']
-                if is_quantile:
-                    for name in display_task_names:
-                        header += [name, f'pred_{name}']
-                else:
-                    for name in args.task_names:
-                        header += [name, f'pred_{name}']
+                for name in args.task_names:
+                    header += [name, f'pred_{name}']
                 if train_std is not None:
                     for name in args.task_names:
                         header.append(f'std_{name}')
@@ -458,22 +428,13 @@ def _compute_train_visualization(ckpt_id, model_paths, data_path, id_col, ignore
                         if preds_list[j] is None:
                             continue
                         row = ([ids[j]] if id_col else []) + [smi_list[j], split_label]
-                        if is_quantile:
-                            for i in range(n_actual):
-                                t_val = tgts[j][i]
-                                mid = preds_list[j][i]
-                                row += [
-                                    round(t_val, 3) if t_val is not None else '',
-                                    round(mid, 3) if mid is not None else '',
-                                ]
-                        else:
-                            for i in range(len(args.task_names)):
-                                t_val = tgts[j][i]
-                                p_val = preds_list[j][i]
-                                row += [
-                                    round(t_val, 3) if t_val is not None else '',
-                                    round(p_val, 3) if p_val is not None else '',
-                                ]
+                        for i in range(len(args.task_names)):
+                            t_val = tgts[j][i]
+                            p_val = preds_list[j][i]
+                            row += [
+                                round(t_val, 3) if t_val is not None else '',
+                                round(p_val, 3) if p_val is not None else '',
+                            ]
                         if std_list is not None:
                             srow = std_list[j] if std_list[j] is not None else [None] * len(args.task_names)
                             row += [v if v is not None else '' for v in srow]
@@ -575,28 +536,20 @@ def _compute_train_visualization(ckpt_id, model_paths, data_path, id_col, ignore
                 cal_path = conformal_calibration_path(ckpt_id)
                 val_smiles = flat_smiles(val_split)
                 val_targets = val_split.targets()
-                # For quantile models task_names is doubled (['pKi','pKi']); calibration
-                # file only needs the original (undoubled) target columns.
-                if _is_quantile_early:
-                    cal_task_names = args.task_names[:args.num_tasks // 2]
-                else:
-                    cal_task_names = args.task_names
                 with open(cal_path, 'w', newline='') as f:
                     cwriter = csv.writer(f)
-                    cwriter.writerow(['smiles', *cal_task_names])
+                    cwriter.writerow(['smiles', *args.task_names])
                     for s, t in zip(val_smiles, val_targets):
                         cwriter.writerow([s, *['' if v is None else v for v in t]])
 
                 if dataset_type == 'regression':
-                    is_quantile = _is_quantile_early
-                    conf_cal_method = 'conformal_quantile_regression' if is_quantile else 'conformal_regression'
                     conf_arguments = [
                         '--test_path', 'None',
                         '--preds_path', os.path.join(app.config['TEMP_FOLDER'], 'train_conformal_preds.csv'),
                         '--checkpoint_paths', *model_paths,
                         '--smiles_columns', 'smiles',
                         '--calibration_path', cal_path,
-                        '--calibration_method', conf_cal_method,
+                        '--calibration_method', 'conformal_regression',
                         '--conformal_alpha', str(conformal_alpha),
                         # See note above: avoid worker-process DataLoader in this thread.
                         '--num_workers', '0',
@@ -615,10 +568,7 @@ def _compute_train_visualization(ckpt_id, model_paths, data_path, id_col, ignore
                         args=conf_args, smiles=to_smiles_list(test_split), return_uncertainty=True)
                     test_targets_c = test_split.targets()
                     per_task = []
-                    # For quantile models display_task_names is undoubled; for standard
-                    # regression it equals args.task_names.
-                    conf_task_names = display_task_names if is_quantile else args.task_names
-                    for ti, name in enumerate(conf_task_names):
+                    for ti, name in enumerate(args.task_names):
                         covered = total = 0
                         widths = []
                         for j in range(len(conf_preds)):
@@ -641,8 +591,7 @@ def _compute_train_visualization(ckpt_id, model_paths, data_path, id_col, ignore
                             'n': total,
                         })
                     conformal_info = {'enabled': True, 'alpha': conformal_alpha, 'n_cal': n_cal,
-                                      'mode': 'regression', 'per_task': per_task,
-                                      'interval_type': 'quantile' if is_quantile else 'standard'}
+                                      'mode': 'regression', 'per_task': per_task}
                 else:
                     # Classification: Mondrian (class-conditional) conformal. Calibrate a
                     # per-class threshold on the validation set's plain probabilities, then
@@ -842,14 +791,13 @@ def receiver():
     val_curves = {}
     if CURRENT_LOG_PATH and os.path.exists(CURRENT_LOG_PATH):
         val_curves = _parse_val_curves(CURRENT_LOG_PATH)
-    return jsonify(progress=PROGRESS.value, training=TRAINING.value,
-                   mode=bytes(TRAINING_MODE).decode().rstrip('\x00'), val_curves=val_curves)
+    return jsonify(progress=PROGRESS.value, training=TRAINING, mode=TRAINING_MODE, val_curves=val_curves)
 
 
 @app.route('/cancel', methods=['POST'])
 def cancel():
     """Terminates any active training, hyperopt, or prediction subprocess."""
-    global ACTIVE_PROCESS, PROGRESS_BAR_PROCESS, CANCELLED, CURRENT_LOG_PATH
+    global ACTIVE_PROCESS, PROGRESS_BAR_PROCESS, CANCELLED, TRAINING, TRAINING_MODE, PROGRESS, CURRENT_LOG_PATH
     for proc in [ACTIVE_PROCESS, PROGRESS_BAR_PROCESS]:
         if proc and proc.is_alive():
             proc.terminate()
@@ -859,9 +807,9 @@ def cancel():
     ACTIVE_PROCESS = None
     PROGRESS_BAR_PROCESS = None
     CANCELLED = True
-    TRAINING.value = 0
-    TRAINING_MODE[:] = b'\x00' * 32
-    PROGRESS.value = 0.0
+    TRAINING = 0
+    TRAINING_MODE = ''
+    PROGRESS = mp.Value('d', 0.0)
     CURRENT_LOG_PATH = ''
     return jsonify(success=True)
 
@@ -990,7 +938,7 @@ def render_train(**kwargs):
 @check_not_demo
 def train():
     """Renders the train page and performs training if request method is POST."""
-    global PROGRESS, CURRENT_LOG_PATH, ACTIVE_PROCESS, PROGRESS_BAR_PROCESS, CANCELLED
+    global PROGRESS, TRAINING, TRAINING_MODE, CURRENT_LOG_PATH, ACTIVE_PROCESS, PROGRESS_BAR_PROCESS, CANCELLED
 
     warnings, errors = [], []
 
@@ -1004,7 +952,7 @@ def train():
         k: request.form.get(k, '') for k in (
             'dataName', 'idColumn', 'datasetType', 'splitType', 'featuresGenerator',
             'epochs', 'ensembleSize', 'patience', 'minDelta', 'seed',
-            'conformalEnabled', 'conformalAlpha', 'lossFunction', 'checkpointName', 'gpu')
+            'conformalEnabled', 'conformalAlpha', 'checkpointName', 'gpu')
     }
 
     # Get arguments
@@ -1039,15 +987,6 @@ def train():
     features_generator = request.form.get('featuresGenerator', 'none')
     use_progress_bar = request.form.get('useProgressBar', 'True') == 'True'
     conformal_enabled, conformal_alpha = parse_conformal_form(request.form)
-    loss_function = request.form.get('lossFunction', 'mse')
-    # quantile_interval only makes sense for regression with conformal enabled
-    if loss_function == 'quantile_interval' and (dataset_type != 'regression' or not conformal_enabled):
-        loss_function = 'mse'
-    # Pinball loss values are ~10× smaller than MSE, so the default min_delta=0.01
-    # triggers early stopping after only a few epochs for quantile models.
-    # Unconditionally zero it out — patience alone controls early stopping.
-    if loss_function == 'quantile_interval':
-        min_delta = 0.0
     # Random seed controls both the train/val/test split and the initial model
     # weights, so a run is fully reproducible. Default 666.
     seed_raw = request.form.get('seed', '').strip()
@@ -1074,9 +1013,6 @@ def train():
         '--seed', str(seed),
         '--pytorch_seed', str(seed),
     ]
-    if loss_function == 'quantile_interval':
-        train_arg_list += ['--loss_function', 'quantile_interval',
-                           '--quantile_loss_alpha', str(conformal_alpha)]
     if config_path is not None:
         train_arg_list += ['--config_path', config_path]
     if gpu is not None:
@@ -1090,11 +1026,8 @@ def train():
             train_arg_list.append('--no_features_scaling')
     args = TrainArgs().parse_args(train_arg_list)
 
-    # Get task names. Quantile interval models need 2× task names internally
-    # (one per quantile bound); cross_validate handles this via loss_function arg.
-    args.task_names = get_task_names(path=data_path, smiles_columns=args.smiles_columns,
-                                     ignore_columns=ignore_cols or None,
-                                     loss_function=loss_function if loss_function == 'quantile_interval' else None)
+    # Get task names
+    args.task_names = get_task_names(path=data_path, smiles_columns=args.smiles_columns, ignore_columns=ignore_cols or None)
 
     # Safety catch: scan task columns for non-numeric values (likely an undeclared identifier column)
     non_numeric_cols = _find_non_numeric_columns(data_path, args.task_names)
@@ -1149,8 +1082,8 @@ def train():
             pb_proc = mp.Process(target=progress_bar, args=(args, PROGRESS))
             pb_proc.start()
             PROGRESS_BAR_PROCESS = pb_proc
-            TRAINING.value = 1
-            TRAINING_MODE[:5] = b'train'; TRAINING_MODE[5:] = b'\x00' * 27
+            TRAINING = 1
+            TRAINING_MODE = 'train'
 
         CURRENT_LOG_PATH = os.path.join(temp_dir, 'verbose.log')
         train_proc = _spawn.Process(target=_train_worker,
@@ -1178,9 +1111,9 @@ def train():
                     pb_proc.terminate()
                     pb_proc.join(timeout=2)
                 PROGRESS_BAR_PROCESS = None
-                TRAINING.value = 0
-                TRAINING_MODE[:] = b'\x00' * 32
-                PROGRESS.value = 0.0
+                TRAINING = 0
+                TRAINING_MODE = ''
+                PROGRESS = mp.Value('d', 0.0)
             CURRENT_LOG_PATH = ''
             if was_killed:
                 return render_train(warnings=['Training was cancelled.'])
@@ -1243,9 +1176,9 @@ def train():
 
     # Allow the polling JS to detect completion and reload to the results shell.
     if use_progress_bar:
-        TRAINING.value = 0
-        TRAINING_MODE[:] = b'\x00' * 32
-        PROGRESS.value = 0.0
+        TRAINING = 0
+        TRAINING_MODE = ''
+        PROGRESS = mp.Value('d', 0.0)
 
     return render_train(trained=True,
                         dataset_type=dataset_type,
@@ -1292,7 +1225,7 @@ def render_hyperopt(**kwargs):
 @check_not_demo
 def hyperopt_page():
     """Renders the hyperopt page and runs hyperparameter optimization if request method is POST."""
-    global PROGRESS, ACTIVE_PROCESS, PROGRESS_BAR_PROCESS, CANCELLED
+    global PROGRESS, TRAINING, TRAINING_MODE, ACTIVE_PROCESS, PROGRESS_BAR_PROCESS, CANCELLED
 
     warnings, errors = [], []
 
@@ -1385,8 +1318,8 @@ def hyperopt_page():
                              args=(hyper_args.hyperopt_checkpoint_dir, num_iters, PROGRESS))
         pb_proc.start()
         PROGRESS_BAR_PROCESS = pb_proc
-        TRAINING.value = 1
-        TRAINING_MODE[:8] = b'hyperopt'; TRAINING_MODE[8:] = b'\x00' * 24
+        TRAINING = 1
+        TRAINING_MODE = 'hyperopt'
 
         hyper_proc = _spawn.Process(target=_hyperopt_worker, args=(hyper_args_list,))
         hyper_proc.start()
@@ -1404,9 +1337,9 @@ def hyperopt_page():
                 pb_proc.terminate()
                 pb_proc.join(timeout=2)
             PROGRESS_BAR_PROCESS = None
-            TRAINING.value = 0
-            TRAINING_MODE[:] = b'\x00' * 32
-            PROGRESS.value = 0.0
+            TRAINING = 0
+            TRAINING_MODE = ''
+            PROGRESS = mp.Value('d', 0.0)
             if cancelled:
                 return render_hyperopt(warnings=['Hyperopt was cancelled.'])
             errors.append('Hyperopt failed — check server logs for details.')
@@ -1415,9 +1348,9 @@ def hyperopt_page():
         PROGRESS.value = 100
         pb_proc.join()
         PROGRESS_BAR_PROCESS = None
-        TRAINING.value = 0
-        TRAINING_MODE[:] = b'\x00' * 32
-        PROGRESS.value = 0.0
+        TRAINING = 0
+        TRAINING_MODE = ''
+        PROGRESS = mp.Value('d', 0.0)
 
     # Load best hyperparams from saved config
     with open(config_save_path) as f:
@@ -1544,15 +1477,13 @@ def predict():
         '--checkpoint_paths', *model_paths
     ]
     if use_conformal_reg:
-        is_quantile_model = getattr(train_args, 'loss_function', None) == 'quantile_interval'
-        pred_cal_method = 'conformal_quantile_regression' if is_quantile_model else 'conformal_regression'
         arguments += [
             # Name the calibration file's SMILES column explicitly: when predicting from
             # an in-memory SMILES list there is no test CSV to auto-detect it from, so
             # smiles_columns would otherwise be [None] and the calibration load would fail.
             '--smiles_columns', 'smiles',
             '--calibration_path', cal_path,
-            '--calibration_method', pred_cal_method,
+            '--calibration_method', 'conformal_regression',
             '--conformal_alpha', str(conformal_alpha),
         ]
     elif ensemble_unc:
@@ -1578,22 +1509,22 @@ def predict():
             arguments.append('--no_features_scaling')
 
     # Parse arguments
-    global ACTIVE_PROCESS, CANCELLED
+    global ACTIVE_PROCESS, CANCELLED, TRAINING, TRAINING_MODE
 
     # Run predictions in a subprocess so they can be cancelled
     result_queue = _spawn.Queue()
     pred_proc = _spawn.Process(target=_predict_worker, args=(arguments, smiles, result_queue, return_unc, cal_smiles))
     pred_proc.start()
     ACTIVE_PROCESS = pred_proc
-    TRAINING.value = 1
-    TRAINING_MODE[:7] = b'predict'; TRAINING_MODE[7:] = b'\x00' * 25
+    TRAINING = 1
+    TRAINING_MODE = 'predict'
 
     while pred_proc.is_alive():
         pred_proc.join(timeout=0.5)
 
     ACTIVE_PROCESS = None
-    TRAINING.value = 0
-    TRAINING_MODE[:] = b'\x00' * 32
+    TRAINING = 0
+    TRAINING_MODE = ''
     cancelled = CANCELLED
     CANCELLED = False
 
