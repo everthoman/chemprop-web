@@ -33,8 +33,8 @@ from chemprop.utils import create_logger, load_task_names, load_args
 from chemprop.web.app.atom_attribution import compute_attributions
 from chemprop.web.app.applicability import ApplicabilityDomain, load_training_smiles
 
-TRAINING = 0
-TRAINING_MODE = ''  # 'train', 'hyperopt', or 'predict'
+TRAINING = mp.Value('i', 0)       # shared across gunicorn workers
+TRAINING_MODE = mp.Array('c', 32)  # 'train', 'hyperopt', 'predict', or empty
 PROGRESS = mp.Value('d', 0.0)
 CURRENT_LOG_PATH = ''
 ACTIVE_PROCESS = None
@@ -791,13 +791,14 @@ def receiver():
     val_curves = {}
     if CURRENT_LOG_PATH and os.path.exists(CURRENT_LOG_PATH):
         val_curves = _parse_val_curves(CURRENT_LOG_PATH)
-    return jsonify(progress=PROGRESS.value, training=TRAINING, mode=TRAINING_MODE, val_curves=val_curves)
+    return jsonify(progress=PROGRESS.value, training=TRAINING.value,
+                   mode=bytes(TRAINING_MODE).decode().rstrip('\x00'), val_curves=val_curves)
 
 
 @app.route('/cancel', methods=['POST'])
 def cancel():
     """Terminates any active training, hyperopt, or prediction subprocess."""
-    global ACTIVE_PROCESS, PROGRESS_BAR_PROCESS, CANCELLED, TRAINING, TRAINING_MODE, PROGRESS, CURRENT_LOG_PATH
+    global ACTIVE_PROCESS, PROGRESS_BAR_PROCESS, CANCELLED, CURRENT_LOG_PATH
     for proc in [ACTIVE_PROCESS, PROGRESS_BAR_PROCESS]:
         if proc and proc.is_alive():
             proc.terminate()
@@ -807,9 +808,9 @@ def cancel():
     ACTIVE_PROCESS = None
     PROGRESS_BAR_PROCESS = None
     CANCELLED = True
-    TRAINING = 0
-    TRAINING_MODE = ''
-    PROGRESS = mp.Value('d', 0.0)
+    TRAINING.value = 0
+    TRAINING_MODE[:] = b'\x00' * 32
+    PROGRESS.value = 0.0
     CURRENT_LOG_PATH = ''
     return jsonify(success=True)
 
@@ -938,7 +939,7 @@ def render_train(**kwargs):
 @check_not_demo
 def train():
     """Renders the train page and performs training if request method is POST."""
-    global PROGRESS, TRAINING, TRAINING_MODE, CURRENT_LOG_PATH, ACTIVE_PROCESS, PROGRESS_BAR_PROCESS, CANCELLED
+    global PROGRESS, CURRENT_LOG_PATH, ACTIVE_PROCESS, PROGRESS_BAR_PROCESS, CANCELLED
 
     warnings, errors = [], []
 
@@ -1082,8 +1083,8 @@ def train():
             pb_proc = mp.Process(target=progress_bar, args=(args, PROGRESS))
             pb_proc.start()
             PROGRESS_BAR_PROCESS = pb_proc
-            TRAINING = 1
-            TRAINING_MODE = 'train'
+            TRAINING.value = 1
+            TRAINING_MODE[:5] = b'train'; TRAINING_MODE[5:] = b'\x00' * 27
 
         CURRENT_LOG_PATH = os.path.join(temp_dir, 'verbose.log')
         train_proc = _spawn.Process(target=_train_worker,
@@ -1111,9 +1112,9 @@ def train():
                     pb_proc.terminate()
                     pb_proc.join(timeout=2)
                 PROGRESS_BAR_PROCESS = None
-                TRAINING = 0
-                TRAINING_MODE = ''
-                PROGRESS = mp.Value('d', 0.0)
+                TRAINING.value = 0
+                TRAINING_MODE[:] = b'\x00' * 32
+                PROGRESS.value = 0.0
             CURRENT_LOG_PATH = ''
             if was_killed:
                 return render_train(warnings=['Training was cancelled.'])
@@ -1176,9 +1177,9 @@ def train():
 
     # Allow the polling JS to detect completion and reload to the results shell.
     if use_progress_bar:
-        TRAINING = 0
-        TRAINING_MODE = ''
-        PROGRESS = mp.Value('d', 0.0)
+        TRAINING.value = 0
+        TRAINING_MODE[:] = b'\x00' * 32
+        PROGRESS.value = 0.0
 
     return render_train(trained=True,
                         dataset_type=dataset_type,
@@ -1225,7 +1226,7 @@ def render_hyperopt(**kwargs):
 @check_not_demo
 def hyperopt_page():
     """Renders the hyperopt page and runs hyperparameter optimization if request method is POST."""
-    global PROGRESS, TRAINING, TRAINING_MODE, ACTIVE_PROCESS, PROGRESS_BAR_PROCESS, CANCELLED
+    global PROGRESS, ACTIVE_PROCESS, PROGRESS_BAR_PROCESS, CANCELLED
 
     warnings, errors = [], []
 
@@ -1318,8 +1319,8 @@ def hyperopt_page():
                              args=(hyper_args.hyperopt_checkpoint_dir, num_iters, PROGRESS))
         pb_proc.start()
         PROGRESS_BAR_PROCESS = pb_proc
-        TRAINING = 1
-        TRAINING_MODE = 'hyperopt'
+        TRAINING.value = 1
+        TRAINING_MODE[:8] = b'hyperopt'; TRAINING_MODE[8:] = b'\x00' * 24
 
         hyper_proc = _spawn.Process(target=_hyperopt_worker, args=(hyper_args_list,))
         hyper_proc.start()
@@ -1337,9 +1338,9 @@ def hyperopt_page():
                 pb_proc.terminate()
                 pb_proc.join(timeout=2)
             PROGRESS_BAR_PROCESS = None
-            TRAINING = 0
-            TRAINING_MODE = ''
-            PROGRESS = mp.Value('d', 0.0)
+            TRAINING.value = 0
+            TRAINING_MODE[:] = b'\x00' * 32
+            PROGRESS.value = 0.0
             if cancelled:
                 return render_hyperopt(warnings=['Hyperopt was cancelled.'])
             errors.append('Hyperopt failed — check server logs for details.')
@@ -1348,9 +1349,9 @@ def hyperopt_page():
         PROGRESS.value = 100
         pb_proc.join()
         PROGRESS_BAR_PROCESS = None
-        TRAINING = 0
-        TRAINING_MODE = ''
-        PROGRESS = mp.Value('d', 0.0)
+        TRAINING.value = 0
+        TRAINING_MODE[:] = b'\x00' * 32
+        PROGRESS.value = 0.0
 
     # Load best hyperparams from saved config
     with open(config_save_path) as f:
@@ -1509,22 +1510,22 @@ def predict():
             arguments.append('--no_features_scaling')
 
     # Parse arguments
-    global ACTIVE_PROCESS, CANCELLED, TRAINING, TRAINING_MODE
+    global ACTIVE_PROCESS, CANCELLED
 
     # Run predictions in a subprocess so they can be cancelled
     result_queue = _spawn.Queue()
     pred_proc = _spawn.Process(target=_predict_worker, args=(arguments, smiles, result_queue, return_unc, cal_smiles))
     pred_proc.start()
     ACTIVE_PROCESS = pred_proc
-    TRAINING = 1
-    TRAINING_MODE = 'predict'
+    TRAINING.value = 1
+    TRAINING_MODE[:7] = b'predict'; TRAINING_MODE[7:] = b'\x00' * 25
 
     while pred_proc.is_alive():
         pred_proc.join(timeout=0.5)
 
     ACTIVE_PROCESS = None
-    TRAINING = 0
-    TRAINING_MODE = ''
+    TRAINING.value = 0
+    TRAINING_MODE[:] = b'\x00' * 32
     cancelled = CANCELLED
     CANCELLED = False
 
