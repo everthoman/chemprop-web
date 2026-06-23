@@ -1640,7 +1640,7 @@ def predict():
             else:
                 for t in task_names:
                     conf_cols += [f'conformal_{t}', f'active_in_set_{t}', f'inactive_in_set_{t}']
-        ad_cols = ['ad_similarity', 'ad_in_domain'] if applicability is not None else []
+        ad_cols = ['ad_similarity', 'ad_in_domain', 'ad_threshold'] if applicability is not None else []
         header = (['id'] if has_ids else []) + ['smiles'] + task_names + std_cols + conf_cols + ad_cols
         writer.writerow(header)
         for idx, (smi_row, pred) in enumerate(zip(smiles, preds)):
@@ -1662,9 +1662,9 @@ def predict():
             if applicability is not None:
                 ad = applicability[idx]
                 if ad is not None:
-                    row.extend([ad['similarity'], 'yes' if ad['in_domain'] else 'no'])
+                    row.extend([ad['similarity'], 'yes' if ad['in_domain'] else 'no', ad['threshold']])
                 else:
-                    row.extend(['', ''])
+                    row.extend(['', '', ''])
             writer.writerow(row)
 
     if None in preds:
