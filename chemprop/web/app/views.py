@@ -48,23 +48,35 @@ LAST_HYPEROPT_SETTINGS = {}  # user_key -> last submitted Hyperopt form values
 def _normalize_to_csv(path: str) -> None:
     """Re-write a tab- or whitespace-separated file as a comma-separated CSV in place.
 
-    Detects the delimiter from the first line: tab takes priority, then comma (no-op),
-    then falls back to splitting on any whitespace (handles multi-space-separated files).
-    Strips a UTF-8 BOM if present, filters trailing blank rows, and writes Unix line endings.
+    Detects the delimiter from the first line by whichever of tab/comma occurs more
+    often (ties favor tab), then falls back to splitting on any whitespace (handles
+    multi-space-separated files). Strips a UTF-8 BOM if present, filters trailing
+    blank rows, and writes Unix line endings.
     """
-    with open(path, 'rb') as f:
-        has_bom = f.read(3) == b'\xef\xbb\xbf'
-    enc = 'utf-8-sig' if has_bom else 'utf-8'
+    try:
+        with open(path, 'rb') as f:
+            has_bom = f.read(3) == b'\xef\xbb\xbf'
+        enc = 'utf-8-sig' if has_bom else 'utf-8'
 
-    with open(path, newline='', encoding=enc) as f:
-        first_line = f.readline()
+        with open(path, newline='', encoding=enc) as f:
+            first_line = f.readline()
+    except UnicodeDecodeError:
+        with open(path, 'rb') as f:
+            has_bom = f.read(3) == b'\xef\xbb\xbf'
+        enc = 'utf-8-sig' if has_bom else 'latin-1'
 
-    if '\t' in first_line:
+        with open(path, newline='', encoding=enc) as f:
+            first_line = f.readline()
+
+    tab_count = first_line.count('\t')
+    comma_count = first_line.count(',')
+
+    if tab_count > 0 and tab_count >= comma_count:
         delimiter = '\t'
-    elif ',' in first_line and not has_bom:
+    elif comma_count > 0 and not has_bom:
         return  # already clean comma-separated CSV
     else:
-        delimiter = ',' if ',' in first_line else None  # BOM-only CSV or whitespace-split
+        delimiter = ',' if comma_count > 0 else None  # BOM-only CSV or whitespace-split
 
     rows = []
     with open(path, newline='', encoding=enc) as f:
@@ -934,7 +946,7 @@ def cancel():
 
 
 # Endpoints reachable without being logged in.
-PUBLIC_ENDPOINTS = {'login', 'static', 'receiver', 'cancel'}
+PUBLIC_ENDPOINTS = {'login', 'static'}
 
 
 def current_user_id() -> Optional[int]:
@@ -1185,7 +1197,7 @@ def train():
 
     if dataset_type == 'classification' and len(unique_targets - {0, 1}) > 0:
         if binarize_enabled:
-            binarize_out = os.path.join(app.config['TEMP_FOLDER'], f'binarized_{data_name}.csv')
+            binarize_out = os.path.join(app.config['TEMP_FOLDER'], f'binarized_{secure_filename(data_name)}.csv')
             try:
                 binarize_stats = _binarize_csv(data_path, args.task_names, binarize_method, binarize_param, binarize_out)
             except Exception as e:
@@ -1943,7 +1955,13 @@ def upload_data(return_page: str):
     upload_id_col = request.form.get('idColumn', '').strip() or None
     with NamedTemporaryFile() as temp_file:
         dataset.save(temp_file.name)
-        _normalize_to_csv(temp_file.name)
+        try:
+            _normalize_to_csv(temp_file.name)
+        except (OSError, UnicodeDecodeError, csv.Error) as e:
+            errors.append(f'Could not read uploaded file: {e}')
+            warnings, errors = json.dumps(warnings), json.dumps(errors)
+            return redirect(url_for(return_page, data_upload_warnings=warnings, data_upload_errors=errors))
+
         dataset_errors = validate_data(temp_file.name, ignore_columns=[upload_id_col] if upload_id_col else None)
 
         if len(dataset_errors) > 0:

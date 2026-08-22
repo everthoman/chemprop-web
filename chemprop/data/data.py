@@ -419,9 +419,8 @@ class MoleculeDataset(Dataset):
             for d in self._data:
                 mol_graphs_list = []
                 for s, m in zip(d.smiles, d.mol):
-                    if s in SMILES_TO_GRAPH:
-                        mol_graph = SMILES_TO_GRAPH[s]
-                    else:
+                    mol_graph = SMILES_TO_GRAPH.get(s)
+                    if mol_graph is None:
                         if len(d.smiles) > 1 and (d.atom_features is not None or d.bond_features is not None):
                             raise NotImplementedError('Atom descriptors are currently only supported with one molecule '
                                                       'per input (i.e., number_of_molecules = 1).')
@@ -980,9 +979,12 @@ def make_mols(smiles: List[str], reaction_list: List[bool], keep_h_list: List[bo
     """
     mol = []
     for s, reaction, keep_h, add_h, keep_atom_map in zip(smiles, reaction_list, keep_h_list, add_h_list, keep_atom_map_list):
-        if reaction:
-            mol.append(SMILES_TO_MOL[s] if s in SMILES_TO_MOL else (make_mol(s.split(">")[0], keep_h, add_h, keep_atom_map), make_mol(s.split(">")[-1], keep_h, add_h, keep_atom_map)))
+        cached = SMILES_TO_MOL.get(s)
+        if cached is not None:
+            mol.append(cached)
+        elif reaction:
+            mol.append((make_mol(s.split(">")[0], keep_h, add_h, keep_atom_map), make_mol(s.split(">")[-1], keep_h, add_h, keep_atom_map)))
         else:
-            mol.append(SMILES_TO_MOL[s] if s in SMILES_TO_MOL else make_mol(s, keep_h, add_h, keep_atom_map))
+            mol.append(make_mol(s, keep_h, add_h, keep_atom_map))
     return mol
 
