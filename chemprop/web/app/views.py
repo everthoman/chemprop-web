@@ -30,7 +30,7 @@ from chemprop.constants import MODEL_FILE_NAME, TRAIN_LOGGER_NAME
 from chemprop.data import get_data, get_header, get_smiles, get_task_names, validate_data, split_data, empty_cache
 from chemprop.train import make_predictions, run_training
 from chemprop.utils import create_logger, load_task_names, load_args
-from chemprop.web.app.atom_attribution import compute_attributions
+from chemprop.web.app.atom_attribution import compute_attributions, _cached_load_args
 from chemprop.web.app.applicability import ApplicabilityDomain, load_training_smiles
 
 TRAINING = mp.Value('i', 0)       # shared across gunicorn workers
@@ -1902,7 +1902,7 @@ def get_attribution():
     model_paths = [os.path.join(app.config['CHECKPOINT_FOLDER'], f'{m["id"]}.pt') for m in models]
 
     try:
-        train_args = load_args(model_paths[0])
+        train_args = _cached_load_args(model_paths[0])
         has_attribution = train_args.features_generator is None
         svgs = compute_attributions(model_paths, [smiles])
         svg = svgs[0] if svgs else None
