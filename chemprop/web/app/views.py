@@ -958,18 +958,40 @@ def current_user_id() -> Optional[int]:
     return session.get('user_id')
 
 
+def _wants_json_response() -> bool:
+    """True when the current request is an AJAX/fetch call rather than a
+    top-level page navigation.
+
+    Such callers cannot follow an HTML login redirect usefully — the browser
+    hands them the login page's markup and ``response.json()`` blows up with
+    "Unexpected token '<'". They should get a 401 JSON body instead.
+    """
+    if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+        return True
+    # Fetch/XHR set Sec-Fetch-Dest to "empty"; document navigations use
+    # "document"/"iframe" (or omit the header on older browsers).
+    dest = request.headers.get('Sec-Fetch-Dest')
+    if dest and dest not in ('document', 'iframe'):
+        return True
+    return request.accept_mimetypes.accept_json and not request.accept_mimetypes.accept_html
+
+
 @app.before_request
 def require_login():
     """Redirects unauthenticated requests to the login page.
 
     Skipped in DEMO mode, which exposes no per-user accounts, and for the
-    login page and static assets.
+    login page and static assets. AJAX/fetch callers get a 401 JSON response
+    rather than the HTML login page.
     """
     if app.config.get('DEMO'):
         return None
 
     if request.endpoint in PUBLIC_ENDPOINTS or session.get('user_id') is not None:
         return None
+
+    if _wants_json_response():
+        return jsonify(error='Your session has expired. Please reload the page and log in again.'), 401
 
     return redirect(url_for('login'))
 
