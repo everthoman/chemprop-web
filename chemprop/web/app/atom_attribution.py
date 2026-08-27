@@ -10,7 +10,7 @@ from typing import List, Optional
 import numpy as np
 import torch
 from rdkit import Chem
-from rdkit.Chem.Draw import rdMolDraw2D
+from rdkit.Chem.Draw import rdMolDraw2D, SimilarityMaps
 
 from chemprop.utils import load_checkpoint, load_args
 
@@ -29,7 +29,7 @@ _MODEL_CACHE = OrderedDict()   # path -> loaded MoleculeModel
 _MODEL_CACHE_MAX = 12
 _ARGS_CACHE = {}               # path -> TrainArgs
 _SVG_CACHE = OrderedDict()     # (path0, smiles) -> svg string
-_SVG_CACHE_MAX = 500
+_SVG_CACHE_MAX = 100          # contour-map SVGs are large (~0.5-1 MB each)
 _CACHE_LOCK = threading.Lock()
 
 
@@ -116,38 +116,17 @@ def _compute_atom_weights(model, smiles_str: str) -> Optional[np.ndarray]:
 
 def render_attribution_svg(smiles_str: str, weights: np.ndarray,
                            width: int = 400, height: int = 300) -> Optional[str]:
-    """Render molecule with per-atom attribution weights as an inline SVG string.
-
-    Atoms are shaded from green (increases the prediction) to red (decreases it).
-    We highlight atoms rather than drawing a SimilarityMaps contour grid: the
-    contour SVG runs to hundreds of KB and janks the browser when it is swapped
-    into the hover tooltip on every mouse move, whereas atom highlighting is a
-    few KB and renders instantly.
-    """
+    """Render molecule with per-atom attribution weights as an inline SVG string."""
     mol = Chem.MolFromSmiles(smiles_str)
     if mol is None:
         return None
 
-    max_abs = float(np.abs(weights).max())
-    norm = weights / max_abs if max_abs > 0 else weights
-
-    highlight_atoms = list(range(mol.GetNumAtoms()))
-    atom_colors = {}
-    for i, w in enumerate(norm):
-        w = max(-1.0, min(1.0, float(w)))
-        if w >= 0:  # white -> green
-            atom_colors[i] = (1.0 - 0.65 * w, 1.0, 1.0 - 0.65 * w)
-        else:       # white -> red
-            atom_colors[i] = (1.0, 1.0 + 0.65 * w, 1.0 + 0.65 * w)
+    max_abs = np.abs(weights).max()
+    norm_weights = (weights / max_abs).tolist() if max_abs > 0 else weights.tolist()
 
     try:
         drawer = rdMolDraw2D.MolDraw2DSVG(width, height)
-        rdMolDraw2D.PrepareAndDrawMolecule(
-            drawer, mol,
-            highlightAtoms=highlight_atoms,
-            highlightAtomColors=atom_colors,
-            highlightBonds=[],
-        )
+        SimilarityMaps.GetSimilarityMapFromWeights(mol, norm_weights, drawer)
         drawer.FinishDrawing()
         svg = drawer.GetDrawingText()
         # Strip XML declaration so the SVG embeds cleanly inline in HTML
