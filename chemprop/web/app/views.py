@@ -483,6 +483,41 @@ def resolve_foundation(value, user_id):
     return path, f'checkpoint: {row["ckpt_name"]}'
 
 
+def v2_checkpoint_info_script() -> str:
+    return os.path.join(os.path.dirname(os.path.realpath(__file__)), 'v2_checkpoint_info.py')
+
+
+def validate_uploaded_v2(info, raw_task_names: str):
+    """Checks an uploaded chemprop 2 checkpoint and settles its target names.
+
+    The checkpoint records how many targets it predicts and what kind of task they
+    are, but not what they are called, so the names come from the upload form. A
+    single-target model is named for the user if they did not say.
+    """
+    if info is None:
+        raise ValueError('That file is not a checkpoint this app can read — it is '
+                         'neither a chemprop 1 nor a chemprop 2 model.')
+
+    if info.get('multicomponent'):
+        raise ValueError('This is a multi-molecule chemprop 2 model, which this app '
+                         'does not support.')
+
+    n_tasks = info['n_tasks']
+    task_names = [name.strip() for name in raw_task_names.split(',') if name.strip()]
+
+    if not task_names:
+        if n_tasks == 1:
+            return ['prediction']
+        raise ValueError(f'This model predicts {n_tasks} targets. Enter their column '
+                         f'names, separated by commas, when uploading it.')
+
+    if len(task_names) != n_tasks:
+        raise ValueError(f'This model predicts {n_tasks} target(s) but {len(task_names)} '
+                         f'name(s) were given.')
+
+    return task_names
+
+
 def v2_attribution_script() -> str:
     return os.path.join(os.path.dirname(os.path.realpath(__file__)), 'v2_attribution.py')
 
@@ -2787,21 +2822,50 @@ def upload_checkpoint(return_page: str):
         try:
             ckpt_args = load_args(ckpt_paths[0])
         except Exception:
-            # chemprop 2.x checkpoints (including anything finetuned from a
-            # foundation model) carry no chemprop 1.x arguments, and this process
-            # cannot open them to read the task names a checkpoint entry needs.
-            temp_dir.cleanup()
-            errors.append('This looks like a chemprop 2 checkpoint. Uploading chemprop 2 '
-                          'models is not supported yet — train it here instead.')
-            return redirect(url_for(return_page,
-                                    checkpoint_upload_warnings=json.dumps(warnings),
-                                    checkpoint_upload_errors=json.dumps(errors)))
+            # A chemprop 2 checkpoint carries no chemprop 1.x arguments; it is
+            # identified and described by the v2 environment instead.
+            ckpt_args = None
+
+        backend = 'v1' if ckpt_args is not None else 'v2'
+        info = task_names = None
+
+        if backend == 'v2':
+            if not app.config['CHEMPROP2_AVAILABLE']:
+                temp_dir.cleanup()
+                errors.append('This is not a chemprop 1 checkpoint, and no chemprop 2 '
+                              'environment is available to read it.')
+                return redirect(url_for(return_page,
+                                        checkpoint_upload_warnings=json.dumps(warnings),
+                                        checkpoint_upload_errors=json.dumps(errors)))
+
+            info = backends.checkpoint_info(
+                app.config['CHEMPROP2_PYTHON'], v2_checkpoint_info_script(),
+                ckpt_paths[0], backends.subprocess_env(None))
+
+            try:
+                task_names = validate_uploaded_v2(info, request.form.get('taskNames', ''))
+            except ValueError as e:
+                temp_dir.cleanup()
+                errors.append(str(e))
+                return redirect(url_for(return_page,
+                                        checkpoint_upload_warnings=json.dumps(warnings),
+                                        checkpoint_upload_errors=json.dumps(errors)))
+
+        if backend == 'v1':
+            model_class, epochs, training_size = (ckpt_args.dataset_type, ckpt_args.epochs,
+                                                  ckpt_args.train_data_size)
+        else:
+            # An uploaded model does not say how long it trained or on how much;
+            # zero reads as "unknown" on the Checkpoints page.
+            model_class, epochs, training_size = info['task_type'], 0, 0
+
         ckpt_id, new_ckpt_name = db.insert_ckpt(ckpt_name,
                                                 current_user,
-                                                ckpt_args.dataset_type,
-                                                ckpt_args.epochs,
+                                                model_class,
+                                                epochs,
                                                 len(ckpt_paths),
-                                                ckpt_args.train_data_size)
+                                                training_size,
+                                                backend=backend)
 
         for ckpt_path in ckpt_paths:
             model_id = db.insert_model(ckpt_id)
@@ -2811,6 +2875,16 @@ def upload_checkpoint(return_page: str):
                 warnings.append(name_already_exists_message('Checkpoint', ckpt_name, new_ckpt_name))
 
             shutil.copy(ckpt_path, model_path)
+
+        if backend == 'v2':
+            # Predicting from a v2 checkpoint reads this rather than the model file.
+            write_ckpt_meta(ckpt_id, backend='v2', foundation=None,
+                            task_names=task_names, dataset_type=info['task_type'],
+                            features_generator=None, smiles_column='smiles')
+            warnings.append(
+                f'Registered as a chemprop 2 model predicting '
+                f'{", ".join(task_names)}. Conformal prediction and the applicability '
+                f'domain need a training set, so they are unavailable for uploads.')
 
     temp_dir.cleanup()
 

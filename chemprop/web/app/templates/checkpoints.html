@@ -33,9 +33,9 @@
                         <span class="label label-default">D-MPNN</span>
                     {% endif %}
                 </td>
-                <td style="vertical-align:middle;">Epochs: {{ checkpoint['epochs'] }}</td>
+                <td style="vertical-align:middle;">Epochs: {{ checkpoint['epochs'] or 'unknown' }}</td>
                 <td style="vertical-align:middle;">Ensemble Size: {{ checkpoint['ensemble_size'] }}</td>
-                <td style="vertical-align:middle;">Training Size: {{ checkpoint['training_size'] }} molecules</td>
+                <td style="vertical-align:middle;">Training Size: {% if checkpoint['training_size'] %}{{ checkpoint['training_size'] }} molecules{% else %}unknown{% endif %}</td>
                 <td>
                     <a href="{{ url_for('download_checkpoint', checkpoint=checkpoint['id']) }}">
                         <button class="btn btn-default btn-sm">Download</button>

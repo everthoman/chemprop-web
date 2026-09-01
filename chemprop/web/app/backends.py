@@ -343,6 +343,33 @@ def run_cli(cmd: Sequence[str], log_path: str, env: Dict[str, str]) -> Subproces
     return Subprocess(popen, log_file)
 
 
+def checkpoint_info(python_bin: str, script_path: str, model_path: str,
+                    env: Dict[str, str], timeout: float = 120.0) -> Optional[Dict]:
+    """What a chemprop 2 checkpoint says about itself, or None if it isn't one.
+
+    Only chemprop 2 can open its own checkpoints, so this asks the v2 environment.
+    """
+    script_path = os.path.abspath(script_path)
+    try:
+        completed = subprocess.run([python_bin, script_path],
+                                   input=json.dumps({'path': model_path}),
+                                   capture_output=True, text=True, env=env,
+                                   cwd=os.path.dirname(script_path) or '.',
+                                   timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+    if completed.returncode != 0:
+        return None
+
+    try:
+        info = json.loads(completed.stdout)
+    except ValueError:
+        return None
+
+    return None if 'error' in info else info
+
+
 class AttributionWorker:
     """A long-lived chemprop 2 process that answers attribution requests.
 
