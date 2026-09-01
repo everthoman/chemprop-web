@@ -38,13 +38,18 @@ class BackendError(RuntimeError):
 
 # --- command building -----------------------------------------------------
 
-def base_cmd(conda_exe: str, env_name: str) -> List[str]:
-    """The prefix that runs the chemprop CLI inside the v2 conda environment."""
-    return [conda_exe, 'run', '-n', env_name, '--no-capture-output', 'chemprop']
+def base_cmd(chemprop_bin: str) -> List[str]:
+    """The v2 environment's chemprop entry point.
+
+    Invoked directly rather than through ``conda run``: the wrapper adds processes
+    that end up outside the group this app signals, so a cancelled run would leave
+    training alive. The console script's shebang selects the environment's Python,
+    so no activation is needed.
+    """
+    return [chemprop_bin]
 
 
-def build_train_cmd(conda_exe: str,
-                    env_name: str,
+def build_train_cmd(chemprop_bin: str,
                     data_path: str,
                     output_dir: str,
                     task_type: str,
@@ -65,7 +70,7 @@ def build_train_cmd(conda_exe: str,
     so an identifier column present in the CSV is excluded the same way the v1
     backend excludes it via ``ignore_columns``.
     """
-    cmd = base_cmd(conda_exe, env_name) + [
+    cmd = base_cmd(chemprop_bin) + [
         'train',
         '--data-path', data_path,
         '--output-dir', output_dir,
@@ -101,8 +106,7 @@ def build_train_cmd(conda_exe: str,
     return cmd
 
 
-def build_predict_cmd(conda_exe: str,
-                      env_name: str,
+def build_predict_cmd(chemprop_bin: str,
                       test_path: str,
                       preds_path: str,
                       model_paths: Sequence[str],
@@ -112,7 +116,7 @@ def build_predict_cmd(conda_exe: str,
                       conformal_alpha: Optional[float] = None,
                       accelerator: str = 'cpu') -> List[str]:
     """Builds a ``chemprop predict`` command line."""
-    cmd = base_cmd(conda_exe, env_name) + [
+    cmd = base_cmd(chemprop_bin) + [
         'predict',
         '--test-path', test_path,
         '--preds-path', preds_path,

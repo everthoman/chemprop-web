@@ -36,9 +36,15 @@ CHEMPROP2_ENV = os.environ.get('CHEMPROP2_ENV', 'chemprop2')
 CONDA_EXE = os.environ.get('CONDA_EXE') or shutil.which('conda') or \
     os.path.expanduser('~/Programs/miniconda3/bin/conda')
 
+# The environment's own entry point, invoked directly rather than through
+# `conda run`: that wrapper puts two extra processes between this app and the
+# training process, and they land in a different process group, so cancelling a
+# run killed the wrapper and left the training itself running on the GPU.
+CHEMPROP2_BIN = os.environ.get('CHEMPROP2_BIN') or os.path.join(
+    os.path.dirname(os.path.dirname(CONDA_EXE)), 'envs', CHEMPROP2_ENV, 'bin', 'chemprop')
+
 # The v2 backend is offered on the Train page only when its environment is present.
-CHEMPROP2_AVAILABLE = os.path.isdir(
-    os.path.join(os.path.dirname(os.path.dirname(CONDA_EXE)), 'envs', CHEMPROP2_ENV))
+CHEMPROP2_AVAILABLE = os.path.isfile(CHEMPROP2_BIN)
 
 # Foundation models selectable when training with the v2 backend. The names are
 # passed straight to `chemprop train --from-foundation`.

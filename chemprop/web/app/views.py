@@ -35,14 +35,76 @@ from chemprop.web.app.atom_attribution import compute_attributions, plain_svg
 from chemprop.web.app.applicability import ApplicabilityDomain, load_training_smiles
 from chemprop.web.app import backends
 
-TRAINING = mp.Value('i', 0)       # shared across gunicorn workers
-TRAINING_MODE = mp.Array('c', 32)  # 'train', 'hyperopt', 'predict', or empty
-PROGRESS = mp.Value('d', 0.0)
-CURRENT_LOG_PATH = ''
-CURRENT_V2_DIR = ''  # output dir of a running chemprop 2.x job, for live progress/curves
-ACTIVE_PROCESS = None
-PROGRESS_BAR_PROCESS = None
-CANCELLED = False
+class Job:
+    """One user's running training, hyperopt or prediction.
+
+    This state used to be a single set of module globals, so two jobs running at
+    once overwrote each other: the progress bar showed a mixture of both and
+    /cancel killed whichever had started most recently rather than the one the
+    user was looking at. Keyed by user instead, each job owns its own state.
+
+    ``progress`` stays a shared value because the progress bar runs in a forked
+    process; everything else is only touched by the request thread.
+    """
+
+    def __init__(self, mode: str, user_key: str):
+        self.mode = mode          # 'train', 'hyperopt' or 'predict'
+        self.user_key = user_key
+        self.progress = mp.Value('d', 0.0)
+        self.process = None       # training/hyperopt/prediction subprocess
+        self.progress_bar = None
+        self.log_path = ''
+        self.v2_dir = ''          # output dir of a chemprop 2.x run, for live curves
+        self.cancelled = False
+
+    def is_running(self) -> bool:
+        return self.process is not None and self.process.is_alive()
+
+    def stop(self) -> None:
+        """Terminates the job's processes and marks it cancelled.
+
+        The flag is raised before the processes are signalled: the view waiting on
+        the job notices the process dying and reads this flag immediately, so
+        setting it afterwards let it read False and report a failure instead.
+        """
+        self.cancelled = True
+        for proc in (self.process, self.progress_bar):
+            if proc and proc.is_alive():
+                proc.terminate()
+                proc.join(timeout=3)
+                if proc.is_alive():
+                    proc.kill()
+        self.process = None
+        self.progress_bar = None
+
+
+JOBS = {}  # user key -> Job
+JOBS_LOCK = threading.Lock()
+
+
+def job_key() -> str:
+    return str(current_user_id() or '')
+
+
+def start_job(mode: str) -> "Job":
+    """Registers a new job for the current user, replacing any finished one."""
+    key = job_key()
+    job = Job(mode, key)
+    with JOBS_LOCK:
+        JOBS[key] = job
+    return job
+
+
+def current_job():
+    """The current user's job, or None."""
+    return JOBS.get(job_key())
+
+
+def end_job(job: "Job") -> None:
+    """Removes a job once its results have been prepared."""
+    with JOBS_LOCK:
+        if JOBS.get(job.user_key) is job:
+            del JOBS[job.user_key]
 LAST_TRAIN_RESULT = {}  # user_key -> last successful training kwargs, served on GET after tab switch
 LAST_TRAIN_SETTINGS = {}     # user_key -> last submitted Train form values, to repopulate the form
 LAST_HYPEROPT_SETTINGS = {}  # user_key -> last submitted Hyperopt form values
@@ -554,8 +616,7 @@ def _compute_train_visualization(ckpt_id, model_paths, data_path, id_col, ignore
                     return [None] * len(mask), {}
 
                 cmd = backends.build_predict_cmd(
-                    app.config['CONDA_EXE'], app.config['CHEMPROP2_ENV'],
-                    test_path=query_path, preds_path=preds_path, model_paths=model_paths,
+                    app.config['CHEMPROP2_BIN'], test_path=query_path, preds_path=preds_path, model_paths=model_paths,
                     uncertainty_method=uncertainty_method, cal_path=cal_path,
                     calibration_method=calibration_method,
                     conformal_alpha=conformal_alpha if calibration_method else None,
@@ -1108,35 +1169,27 @@ def format_float_list(array: List[float], precision: int = 4) -> List[str]:
 @check_not_demo
 def receiver():
     """Receiver monitoring the progress of training."""
+    job = current_job()
+    if job is None:
+        return jsonify(progress=0.0, training=0, mode='', val_curves={})
+
     val_curves = {}
-    if CURRENT_V2_DIR:
-        val_curves = backends.val_curves(CURRENT_V2_DIR)
-    elif CURRENT_LOG_PATH and os.path.exists(CURRENT_LOG_PATH):
-        val_curves = _parse_val_curves(CURRENT_LOG_PATH)
-    # Read the shared array through .value: iterating a multiprocessing char array
-    # yields one-byte bytes objects, so bytes(TRAINING_MODE) raises a TypeError.
-    return jsonify(progress=PROGRESS.value, training=TRAINING.value,
-                   mode=TRAINING_MODE.value.decode(), val_curves=val_curves)
+    if job.v2_dir:
+        val_curves = backends.val_curves(job.v2_dir)
+    elif job.log_path and os.path.exists(job.log_path):
+        val_curves = _parse_val_curves(job.log_path)
+
+    return jsonify(progress=job.progress.value, training=1,
+                   mode=job.mode, val_curves=val_curves)
 
 
 @app.route('/cancel', methods=['POST'])
 def cancel():
-    """Terminates any active training, hyperopt, or prediction subprocess."""
-    global ACTIVE_PROCESS, PROGRESS_BAR_PROCESS, CANCELLED, CURRENT_LOG_PATH, CURRENT_V2_DIR
-    for proc in [ACTIVE_PROCESS, PROGRESS_BAR_PROCESS]:
-        if proc and proc.is_alive():
-            proc.terminate()
-            proc.join(timeout=3)
-            if proc.is_alive():
-                proc.kill()
-    ACTIVE_PROCESS = None
-    PROGRESS_BAR_PROCESS = None
-    CANCELLED = True
-    TRAINING.value = 0
-    TRAINING_MODE[:] = b'\x00' * 32
-    PROGRESS.value = 0.0
-    CURRENT_LOG_PATH = ''
-    CURRENT_V2_DIR = ''
+    """Terminates the current user's training, hyperopt or prediction job."""
+    job = current_job()
+    if job is not None:
+        job.stop()
+        job.progress.value = 0.0
     return jsonify(success=True)
 
 
@@ -1268,12 +1321,19 @@ def render_train(**kwargs):
 @check_not_demo
 def train():
     """Renders the train page and performs training if request method is POST."""
-    global PROGRESS, CURRENT_LOG_PATH, CURRENT_V2_DIR, ACTIVE_PROCESS, PROGRESS_BAR_PROCESS, CANCELLED
-
     warnings, errors = [], []
 
     if request.method == 'GET':
         return render_train()
+
+    # One job per user at a time: they share a GPU and, until this was keyed by
+    # user, a second run left the first one running invisibly with the progress
+    # bar and the Cancel button both pointing at the newer job.
+    running = current_job()
+    if running is not None and running.is_running():
+        errors.append(f'You already have a {running.mode} job running. Wait for it to '
+                      f'finish, or cancel it, before starting another.')
+        return render_train(warnings=warnings, errors=errors)
 
     # Remember the submitted form values so the page repopulates with them (instead of
     # resetting to defaults) until the user applies new settings. Raw strings are stored
@@ -1507,60 +1567,53 @@ def train():
 
         LAST_TRAIN_RESULT.pop(str(current_user), None)
 
+        job = start_job('train')
+
         if use_progress_bar:
             if backend == 'v2':
                 pb_proc = mp.Process(target=progress_bar_v2,
-                                     args=(temp_dir, epochs * ensemble_size, PROGRESS))
+                                     args=(temp_dir, epochs * ensemble_size, job.progress))
             else:
-                pb_proc = mp.Process(target=progress_bar, args=(args, PROGRESS))
+                pb_proc = mp.Process(target=progress_bar, args=(args, job.progress))
             pb_proc.start()
-            PROGRESS_BAR_PROCESS = pb_proc
-            TRAINING.value = 1
-            TRAINING_MODE[:5] = b'train'; TRAINING_MODE[5:] = b'\x00' * 27
+            job.progress_bar = pb_proc
 
-        CURRENT_LOG_PATH = os.path.join(temp_dir, 'verbose.log')
+        job.log_path = os.path.join(temp_dir, 'verbose.log')
         if backend == 'v2':
-            CURRENT_V2_DIR = temp_dir
+            job.v2_dir = temp_dir
             train_cmd = backends.build_train_cmd(
-                app.config['CONDA_EXE'], app.config['CHEMPROP2_ENV'],
-                data_path=data_path, output_dir=temp_dir, task_type=dataset_type,
+                app.config['CHEMPROP2_BIN'], data_path=data_path, output_dir=temp_dir, task_type=dataset_type,
                 task_names=args.task_names, smiles_column=get_header(data_path)[0],
                 epochs=epochs, ensemble_size=ensemble_size, split_type=split_type,
                 seed=seed, foundation=foundation, patience=patience, min_delta=min_delta,
                 batch_size=batch_size, accelerator=backends.accelerator_for(gpu))
-            train_proc = backends.run_cli(train_cmd, CURRENT_LOG_PATH,
+            train_proc = backends.run_cli(train_cmd, job.log_path,
                                           backends.subprocess_env(gpu))
         else:
             train_proc = _spawn.Process(target=_train_worker,
                                         args=(train_arg_list, args.task_names, data_path,
                                               ignore_cols, id_col, temp_dir, patience, min_delta))
         train_proc.start()
-        ACTIVE_PROCESS = train_proc
+        job.process = train_proc
 
         while train_proc.is_alive():
             train_proc.join(timeout=0.5)
 
-        ACTIVE_PROCESS = None
-        log_path = CURRENT_LOG_PATH  # snapshot before cancel() might clear it
-        cancelled = CANCELLED
-        CANCELLED = False
+        job.process = None
+        log_path = job.log_path
+        cancelled = job.cancelled
 
-        # Only treat as cancelled if the process was actually killed (negative
-        # exitcode). A cancel click that arrived after natural completion should
-        # not suppress the training results.
-        was_killed = cancelled and train_proc.exitcode not in (0, None)
+        # The exit code cannot be used to recognise a cancellation: Lightning traps
+        # SIGTERM and exits cleanly, so a killed chemprop 2 run returns 0. The job's
+        # own flag is set only by this user's /cancel, which the page offers only
+        # while the run is in progress, so it is the reliable signal.
+        was_killed = cancelled
 
         if was_killed or train_proc.exitcode not in (0, None):
-            if use_progress_bar:
-                if pb_proc.is_alive():
-                    pb_proc.terminate()
-                    pb_proc.join(timeout=2)
-                PROGRESS_BAR_PROCESS = None
-                TRAINING.value = 0
-                TRAINING_MODE[:] = b'\x00' * 32
-                PROGRESS.value = 0.0
-            CURRENT_LOG_PATH = ''
-            CURRENT_V2_DIR = ''
+            if use_progress_bar and pb_proc.is_alive():
+                pb_proc.terminate()
+                pb_proc.join(timeout=2)
+            end_job(job)
             if was_killed:
                 if v2_dir:
                     shutil.rmtree(v2_dir, ignore_errors=True)
@@ -1573,19 +1626,19 @@ def train():
             return render_train(warnings=warnings, errors=errors)
 
         if use_progress_bar:
-            PROGRESS.value = 100
+            job.progress.value = 100
             pb_proc.join()
-            PROGRESS_BAR_PROCESS = None
-            # Keep TRAINING=1 until results are fully prepared so the polling JS
-            # doesn't reload the page before LAST_TRAIN_RESULT is populated.
+            job.progress_bar = None
+            # The job stays registered until the results are fully prepared, so the
+            # polling JS doesn't reload the page before LAST_TRAIN_RESULT is set.
 
         # Parse convergence data before temp_dir is cleaned up
         if backend == 'v2':
             val_curves = backends.val_curves(temp_dir)
         else:
             val_curves = _parse_val_curves(log_path)
-        CURRENT_LOG_PATH = ''
-        CURRENT_V2_DIR = ''
+        job.log_path = ''
+        job.v2_dir = ''
 
         # Check if name overlap
         if checkpoint_name != ckpt_name:
@@ -1598,6 +1651,7 @@ def train():
             trained_models = backends.collect_models(temp_dir)
             if not trained_models:
                 shutil.rmtree(v2_dir, ignore_errors=True)
+                end_job(job)
                 errors.append('Training produced no model files — check server logs for details.')
                 return render_train(warnings=warnings, errors=errors)
             for model_path in trained_models:
@@ -1657,10 +1711,7 @@ def train():
             shutil.rmtree(v2_dir, ignore_errors=True)
 
     # Allow the polling JS to detect completion and reload to the results shell.
-    if use_progress_bar:
-        TRAINING.value = 0
-        TRAINING_MODE[:] = b'\x00' * 32
-        PROGRESS.value = 0.0
+    end_job(job)
 
     return render_train(trained=True,
                         dataset_type=dataset_type,
@@ -1707,12 +1758,16 @@ def render_hyperopt(**kwargs):
 @check_not_demo
 def hyperopt_page():
     """Renders the hyperopt page and runs hyperparameter optimization if request method is POST."""
-    global PROGRESS, ACTIVE_PROCESS, PROGRESS_BAR_PROCESS, CANCELLED
-
     warnings, errors = [], []
 
     if request.method == 'GET':
         return render_hyperopt()
+
+    running = current_job()
+    if running is not None and running.is_running():
+        errors.append(f'You already have a {running.mode} job running. Wait for it to '
+                      f'finish, or cancel it, before starting another.')
+        return render_hyperopt(warnings=warnings, errors=errors)
 
     # Remember submitted settings so the form repopulates with them until changed.
     LAST_HYPEROPT_SETTINGS[str(current_user_id() or '')] = {
@@ -1796,43 +1851,36 @@ def hyperopt_page():
         hyper_args = HyperoptArgs().parse_args(hyper_args_list)
         hyper_args.task_names = get_task_names(path=data_path, smiles_columns=hyper_args.smiles_columns)
 
+        job = start_job('hyperopt')
+
         pb_proc = mp.Process(target=hyperopt_progress_bar,
-                             args=(hyper_args.hyperopt_checkpoint_dir, num_iters, PROGRESS))
+                             args=(hyper_args.hyperopt_checkpoint_dir, num_iters, job.progress))
         pb_proc.start()
-        PROGRESS_BAR_PROCESS = pb_proc
-        TRAINING.value = 1
-        TRAINING_MODE[:8] = b'hyperopt'; TRAINING_MODE[8:] = b'\x00' * 24
+        job.progress_bar = pb_proc
 
         hyper_proc = _spawn.Process(target=_hyperopt_worker, args=(hyper_args_list,))
         hyper_proc.start()
-        ACTIVE_PROCESS = hyper_proc
+        job.process = hyper_proc
 
         while hyper_proc.is_alive():
             hyper_proc.join(timeout=0.5)
 
-        ACTIVE_PROCESS = None
-        cancelled = CANCELLED
-        CANCELLED = False
+        job.process = None
+        cancelled = job.cancelled
 
         if cancelled or hyper_proc.exitcode != 0:
             if pb_proc.is_alive():
                 pb_proc.terminate()
                 pb_proc.join(timeout=2)
-            PROGRESS_BAR_PROCESS = None
-            TRAINING.value = 0
-            TRAINING_MODE[:] = b'\x00' * 32
-            PROGRESS.value = 0.0
+            end_job(job)
             if cancelled:
                 return render_hyperopt(warnings=['Hyperopt was cancelled.'])
             errors.append('Hyperopt failed — check server logs for details.')
             return render_hyperopt(warnings=warnings, errors=errors)
 
-        PROGRESS.value = 100
+        job.progress.value = 100
         pb_proc.join()
-        PROGRESS_BAR_PROCESS = None
-        TRAINING.value = 0
-        TRAINING_MODE[:] = b'\x00' * 32
-        PROGRESS.value = 0.0
+        end_job(job)
 
     # Load best hyperparams from saved config
     with open(config_save_path) as f:
@@ -1884,7 +1932,7 @@ def render_predict(**kwargs):
                            **kwargs)
 
 
-def run_v2_prediction(smiles, model_paths, task_names, gpu, ensemble_unc,
+def run_v2_prediction(job, smiles, model_paths, task_names, gpu, ensemble_unc,
                       use_conformal_reg, cal_path, conformal_alpha,
                       calibration_smiles=None):
     """Predicts with a chemprop 2.x checkpoint by running its CLI.
@@ -1892,9 +1940,8 @@ def run_v2_prediction(smiles, model_paths, task_names, gpu, ensemble_unc,
     Returns ``(result, failed)``, where ``result`` has the same shape the v1
     backend's ``predict_worker`` puts on its queue, so the response rendering is
     shared between the two backends. The running subprocess is published as
-    ``ACTIVE_PROCESS`` so /cancel can stop it, exactly like the v1 path.
+    the job so /cancel can stop it, exactly like the v1 path.
     """
-    global ACTIVE_PROCESS
 
     temp_folder = app.config['TEMP_FOLDER']
     env = backends.subprocess_env(gpu)
@@ -1913,7 +1960,7 @@ def run_v2_prediction(smiles, model_paths, task_names, gpu, ensemble_unc,
         preds_path = os.path.join(temp_folder, preds_filename)
 
         cmd = backends.build_predict_cmd(
-            app.config['CONDA_EXE'], app.config['CHEMPROP2_ENV'],
+            app.config['CHEMPROP2_BIN'],
             test_path=query_path, preds_path=preds_path, model_paths=model_paths,
             uncertainty_method=uncertainty_method,
             cal_path=cal_path if calibration_method else None,
@@ -1922,10 +1969,10 @@ def run_v2_prediction(smiles, model_paths, task_names, gpu, ensemble_unc,
             accelerator=accelerator)
 
         proc = backends.run_cli(cmd, log_path, env)
-        ACTIVE_PROCESS = proc
+        job.process = proc
         while proc.is_alive():
             proc.join(timeout=0.5)
-        ACTIVE_PROCESS = None
+        job.process = None
 
         if proc.exitcode != 0:
             raise backends.BackendError(
@@ -1962,7 +2009,7 @@ def run_v2_prediction(smiles, model_paths, task_names, gpu, ensemble_unc,
 
         return result, False
     except backends.BackendError as e:
-        ACTIVE_PROCESS = None
+        job.process = None
         return {'success': False, 'error': str(e)}, True
 
 
@@ -2090,15 +2137,11 @@ def predict():
             if not train_args.features_scaling:
                 arguments.append('--no_features_scaling')
 
-    # Parse arguments
-    global ACTIVE_PROCESS, CANCELLED
-
-    TRAINING.value = 1
-    TRAINING_MODE[:7] = b'predict'; TRAINING_MODE[7:] = b'\x00' * 25
+    job = start_job('predict')
 
     if backend == 'v2':
         result, failed = run_v2_prediction(
-            smiles=smiles, model_paths=model_paths, task_names=task_names, gpu=gpu,
+            job, smiles=smiles, model_paths=model_paths, task_names=task_names, gpu=gpu,
             ensemble_unc=ensemble_unc, use_conformal_reg=use_conformal_reg,
             cal_path=cal_path, conformal_alpha=conformal_alpha,
             calibration_smiles=cal_smiles)
@@ -2107,19 +2150,17 @@ def predict():
         result_queue = _spawn.Queue()
         pred_proc = _spawn.Process(target=_predict_worker, args=(arguments, smiles, result_queue, return_unc, cal_smiles))
         pred_proc.start()
-        ACTIVE_PROCESS = pred_proc
+        job.process = pred_proc
 
         while pred_proc.is_alive():
             pred_proc.join(timeout=0.5)
 
-        ACTIVE_PROCESS = None
+        job.process = None
         failed = pred_proc.exitcode != 0
         result = None if failed else result_queue.get_nowait()
 
-    TRAINING.value = 0
-    TRAINING_MODE[:] = b'\x00' * 32
-    cancelled = CANCELLED
-    CANCELLED = False
+    cancelled = job.cancelled
+    end_job(job)
 
     if cancelled:
         return render_predict(warnings=['Prediction was cancelled.'])
