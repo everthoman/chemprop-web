@@ -57,6 +57,7 @@ def build_train_cmd(conda_exe: str,
                     foundation: Optional[str] = None,
                     patience: Optional[int] = None,
                     min_delta: float = 0.0,
+                    batch_size: Optional[int] = None,
                     accelerator: str = 'cpu') -> List[str]:
     """Builds a ``chemprop train`` command line.
 
@@ -85,6 +86,9 @@ def build_train_cmd(conda_exe: str,
         '--save-data-splits',
         '--accelerator', accelerator,
     ]
+
+    if batch_size:
+        cmd += ['--batch-size', str(batch_size)]
 
     if foundation:
         cmd += ['--from-foundation', foundation]

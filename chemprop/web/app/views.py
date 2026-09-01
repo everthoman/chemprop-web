@@ -1257,6 +1257,7 @@ def render_train(**kwargs):
                            gpus=app.config['GPUS'],
                            chemprop2_available=app.config['CHEMPROP2_AVAILABLE'],
                            foundation_models=app.config['FOUNDATION_MODELS'],
+                           default_batch_size=app.config['CHEMPROP2_BATCH_SIZE'],
                            data_upload_warnings=data_upload_warnings,
                            data_upload_errors=data_upload_errors,
                            users=db.get_all_users(),
@@ -1283,7 +1284,7 @@ def train():
             'epochs', 'ensembleSize', 'patience', 'minDelta', 'seed',
             'conformalEnabled', 'conformalAlpha', 'checkpointName', 'gpu',
             'binarizeEnabled', 'binarizeMethod', 'binarizeParam',
-            'backend', 'foundation', 'foundationEnabled')
+            'backend', 'foundation', 'foundationEnabled', 'batchSize')
     }
 
     # Get arguments
@@ -1336,6 +1337,17 @@ def train():
     elif foundation and foundation not in app.config['FOUNDATION_MODELS']:
         errors.append(f'Unknown foundation model "{foundation}".')
         return render_train(warnings=warnings, errors=errors)
+
+    # Batch size is offered for the v2 backend only. chemprop 2 defaults to 64,
+    # which leaves the GPU idling on datasets of this size; the v1 backend keeps
+    # its own default so existing checkpoints stay reproducible.
+    batch_size = app.config['CHEMPROP2_BATCH_SIZE']
+    batch_raw = request.form.get('batchSize', '').strip()
+    if batch_raw:
+        try:
+            batch_size = max(1, int(batch_raw))
+        except ValueError:
+            warnings.append(f'Ignoring invalid batch size "{batch_raw}".')
 
     use_progress_bar = request.form.get('useProgressBar', 'True') == 'True'
     conformal_enabled, conformal_alpha = parse_conformal_form(request.form)
@@ -1515,7 +1527,7 @@ def train():
                 task_names=args.task_names, smiles_column=get_header(data_path)[0],
                 epochs=epochs, ensemble_size=ensemble_size, split_type=split_type,
                 seed=seed, foundation=foundation, patience=patience, min_delta=min_delta,
-                accelerator=backends.accelerator_for(gpu))
+                batch_size=batch_size, accelerator=backends.accelerator_for(gpu))
             train_proc = backends.run_cli(train_cmd, CURRENT_LOG_PATH,
                                           backends.subprocess_env(gpu))
         else:

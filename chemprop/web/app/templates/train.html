@@ -118,6 +118,11 @@
                     </select>
                 </label>
             </div>
+            <label style="font-weight:normal; display:block; margin-top:6px;">Batch size
+                <input type="number" name="batchSize" min="1" step="1" style="width:90px; margin-left:8px;"
+                       value="{{ settings.batchSize or default_batch_size }}">
+                <small class="text-muted">&nbsp; larger batches use the GPU better; very large ones can cost accuracy on small datasets</small>
+            </label>
         </div>
         <div id="v2Notice" class="text-muted" style="display:{% if bk == 'v2' %}block{% else %}none{% endif %}; margin-top:4px; font-size:0.9em;">
             Extra molecule-level features, hyperopt configs and atom attribution are not available for chemprop 2 models.

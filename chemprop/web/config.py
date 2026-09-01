@@ -43,3 +43,7 @@ CHEMPROP2_AVAILABLE = os.path.isdir(
 # Foundation models selectable when training with the v2 backend. The names are
 # passed straight to `chemprop train --from-foundation`.
 FOUNDATION_MODELS = ['CheMeleon']
+
+# Default batch size offered for v2 training. Larger than chemprop 2's own default
+# of 64, which leaves a modern GPU idling on the dataset sizes this app handles.
+CHEMPROP2_BATCH_SIZE = 128
