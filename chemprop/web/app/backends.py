@@ -33,6 +33,16 @@ UNCERTAINTY_SUFFIXES = ('_unc', '_uncertainty', '_uncal_var', '_var', '_mve_unca
 INTERVAL_LOWER_SUFFIXES = ('_conformal_lower', '_interval_lower', '_lower')
 INTERVAL_UPPER_SUFFIXES = ('_conformal_upper', '_interval_upper', '_upper')
 
+# The Train page offers chemprop 1.x's names for its extra molecule features;
+# chemprop 2 spells them differently and keeps v1-compatible variants of the RDKit
+# ones, which are the right choice here so the two backends compute the same thing.
+MOLECULE_FEATURIZERS = {
+    'rdkit_2d_normalized': 'v1_rdkit_2d_normalized',
+    'rdkit_2d': 'v1_rdkit_2d',
+    'morgan': 'morgan_binary',
+    'morgan_count': 'morgan_count',
+}
+
 # Name of the SMILES column written into the CSVs handed to the v2 CLI.
 SMILES_COLUMN = 'smiles'
 
@@ -69,6 +79,7 @@ def build_train_cmd(chemprop_bin: str,
                     min_delta: float = 0.0,
                     batch_size: Optional[int] = None,
                     config_path: Optional[str] = None,
+                    molecule_featurizer: Optional[str] = None,
                     accelerator: str = 'cpu') -> List[str]:
     """Builds a ``chemprop train`` command line.
 
@@ -106,6 +117,9 @@ def build_train_cmd(chemprop_bin: str,
     if batch_size:
         cmd += ['--batch-size', str(batch_size)]
 
+    if molecule_featurizer:
+        cmd += ['--molecule-featurizers', molecule_featurizer]
+
     if foundation:
         cmd += ['--from-foundation', foundation]
 
@@ -125,6 +139,7 @@ def build_predict_cmd(chemprop_bin: str,
                       cal_path: Optional[str] = None,
                       calibration_method: Optional[str] = None,
                       conformal_alpha: Optional[float] = None,
+                      molecule_featurizer: Optional[str] = None,
                       accelerator: str = 'cpu') -> List[str]:
     """Builds a ``chemprop predict`` command line."""
     cmd = base_cmd(chemprop_bin) + [
@@ -136,6 +151,9 @@ def build_predict_cmd(chemprop_bin: str,
         '--num-workers', '0',
         '--accelerator', accelerator,
     ]
+
+    if molecule_featurizer:
+        cmd += ['--molecule-featurizers', molecule_featurizer]
 
     if uncertainty_method:
         cmd += ['--uncertainty-method', uncertainty_method]
@@ -160,6 +178,7 @@ def build_hpopt_cmd(chemprop_bin: str,
                     search_algorithm: str = 'random',
                     foundation: Optional[str] = None,
                     batch_size: Optional[int] = None,
+                    molecule_featurizer: Optional[str] = None,
                     accelerator: str = 'cpu') -> List[str]:
     """Builds a ``chemprop hpopt`` command line."""
     cmd = base_cmd(chemprop_bin) + [
@@ -181,6 +200,8 @@ def build_hpopt_cmd(chemprop_bin: str,
         cmd.append('--raytune-use-gpu')
     if batch_size:
         cmd += ['--batch-size', str(batch_size)]
+    if molecule_featurizer:
+        cmd += ['--molecule-featurizers', molecule_featurizer]
     if foundation:
         cmd += ['--from-foundation', foundation]
 

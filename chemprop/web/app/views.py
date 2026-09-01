@@ -710,7 +710,8 @@ def _write_results_json(ckpt_id, data: dict) -> None:
 
 def _compute_train_visualization(ckpt_id, model_paths, data_path, id_col, ignore_cols,
                                  dataset_type, args, conformal_enabled, conformal_alpha,
-                                 val_curves, result_key, backend='v1', v2_dir=None, gpu=None):
+                                 val_curves, result_key, backend='v1', v2_dir=None, gpu=None,
+                                 v2_featurizer=None):
     """Heavy post-training work, run in a background thread so the Train request can
     return at once. Predicts the train/test splits to build the scatter/ROC plot data
     and stats, writes the per-checkpoint train/test predictions CSV, computes the
@@ -769,7 +770,8 @@ def _compute_train_visualization(ckpt_id, model_paths, data_path, id_col, ignore
                     return [None] * len(mask), {}
 
                 cmd = backends.build_predict_cmd(
-                    app.config['CHEMPROP2_BIN'], test_path=query_path, preds_path=preds_path, model_paths=model_paths,
+                    app.config['CHEMPROP2_BIN'],
+                    molecule_featurizer=v2_featurizer, test_path=query_path, preds_path=preds_path, model_paths=model_paths,
                     uncertainty_method=uncertainty_method, cal_path=cal_path,
                     calibration_method=calibration_method,
                     conformal_alpha=conformal_alpha if calibration_method else None,
@@ -1673,12 +1675,14 @@ def train():
     except ValueError:
         binarize_param = _default_param[binarize_method]
 
-    if backend == 'v2':
-        # Both are chemprop 1.x-only code paths on this server; the form hides them
-        # when the v2 backend is selected, so this only catches a stale submission.
-        if features_generator != 'none':
-            warnings.append('Additional molecule-level features are not supported by the '
-                            'chemprop 2 backend and were ignored.')
+    # chemprop 2 spells these differently; unknown values are dropped rather than
+    # passed to a subprocess.
+    molecule_featurizer = None
+    if backend == 'v2' and features_generator != 'none':
+        molecule_featurizer = backends.MOLECULE_FEATURIZERS.get(features_generator)
+        if molecule_featurizer is None:
+            warnings.append(f'"{features_generator}" has no chemprop 2 equivalent and '
+                            f'was ignored.')
             features_generator = 'none'
 
     # Handle optional hyperopt config (content sent as hidden field via FileReader).
@@ -1831,6 +1835,7 @@ def train():
                 epochs=epochs, ensemble_size=ensemble_size, split_type=split_type,
                 seed=seed, foundation=foundation, patience=patience, min_delta=min_delta,
                 batch_size=batch_size, config_path=config_path,
+                molecule_featurizer=molecule_featurizer,
                 accelerator=backends.accelerator_for(gpu))
             train_proc = backends.run_cli(train_cmd, job.log_path,
                                           backends.subprocess_env(gpu))
@@ -1919,6 +1924,7 @@ def train():
                     task_names=list(args.task_names),
                     dataset_type=dataset_type,
                     features_generator=None if features_generator == 'none' else features_generator,
+                    molecule_featurizer=molecule_featurizer,
                     smiles_column=get_header(data_path)[0])
 
     # Heavy visualization (predicting the train/test splits, conformal coverage) is
@@ -1947,7 +1953,7 @@ def train():
             target=_compute_train_visualization,
             args=(ckpt_id, model_paths, data_path, id_col, ignore_cols, dataset_type,
                   args, conformal_enabled, conformal_alpha, val_curves, result_key,
-                  backend, v2_dir, gpu),
+                  backend, v2_dir, gpu, molecule_featurizer),
             daemon=True).start()
     else:
         # No scatter/ROC for other dataset types; mark results done immediately.
@@ -2066,6 +2072,9 @@ def hyperopt_page():
                       f'found on this server.')
         return render_hyperopt(warnings=warnings, errors=errors)
 
+    molecule_featurizer = (backends.MOLECULE_FEATURIZERS.get(features_generator)
+                           if backend == 'v2' else None)
+
     foundation_choice = request.form.get('foundation', '').strip() or None
     if backend != 'v2' or request.form.get('foundationEnabled', 'True') == 'False':
         foundation_choice = None
@@ -2153,7 +2162,8 @@ def hyperopt_page():
                 save_dir=hyperopt_save_dir, task_type=dataset_type,
                 task_names=hyper_args.task_names, smiles_column=get_header(data_path)[0],
                 epochs=epochs, num_trials=num_iters, search_keywords=search_keywords,
-                foundation=foundation, accelerator=backends.accelerator_for(gpu))
+                foundation=foundation, molecule_featurizer=molecule_featurizer,
+                accelerator=backends.accelerator_for(gpu))
 
             pb_proc = mp.Process(target=hyperopt_progress_bar_v2,
                                  args=(log_path, num_iters, job.progress))
@@ -2255,7 +2265,7 @@ def render_predict(**kwargs):
 
 def run_v2_prediction(job, smiles, model_paths, task_names, gpu, ensemble_unc,
                       use_conformal_reg, cal_path, conformal_alpha,
-                      calibration_smiles=None):
+                      calibration_smiles=None, molecule_featurizer=None):
     """Predicts with a chemprop 2.x checkpoint by running its CLI.
 
     Returns ``(result, failed)``, where ``result`` has the same shape the v1
@@ -2281,7 +2291,7 @@ def run_v2_prediction(job, smiles, model_paths, task_names, gpu, ensemble_unc,
         preds_path = user_temp_path(preds_filename)
 
         cmd = backends.build_predict_cmd(
-            app.config['CHEMPROP2_BIN'],
+            app.config['CHEMPROP2_BIN'], molecule_featurizer=molecule_featurizer,
             test_path=query_path, preds_path=preds_path, model_paths=model_paths,
             uncertainty_method=uncertainty_method,
             cal_path=cal_path if calibration_method else None,
@@ -2467,7 +2477,8 @@ def predict():
             job, smiles=smiles, model_paths=model_paths, task_names=task_names, gpu=gpu,
             ensemble_unc=ensemble_unc, use_conformal_reg=use_conformal_reg,
             cal_path=cal_path, conformal_alpha=conformal_alpha,
-            calibration_smiles=cal_smiles)
+            calibration_smiles=cal_smiles,
+            molecule_featurizer=(meta or {}).get('molecule_featurizer'))
     else:
         # Run predictions in a subprocess so they can be cancelled
         result_queue = _spawn.Queue()
@@ -2564,7 +2575,10 @@ def predict():
     # reads chemprop 1.x model internals, so v2 checkpoints get no highlighting.
     flat_smiles = [s[0] for s in smiles[:10]]
     if backend == 'v2':
-        attribution_svgs, _ = v2_attribution_svgs(ckpt_id, model_paths, flat_smiles, gpu=gpu)
+        if (meta or {}).get('molecule_featurizer'):
+            attribution_svgs = [plain_svg(s) for s in flat_smiles]
+        else:
+            attribution_svgs, _ = v2_attribution_svgs(ckpt_id, model_paths, flat_smiles, gpu=gpu)
     else:
         device = None if (gpu is None or gpu == 'None') else torch.device(f'cuda:{gpu}')
         attribution_svgs = compute_attributions(model_paths, flat_smiles, device=device)
@@ -2667,6 +2681,14 @@ def get_attribution():
     if ckpt_backend(ckpt_id) == 'v2':
         if Chem.MolFromSmiles(smiles) is None:
             return jsonify({'error': 'Could not render this molecule.'}), 400
+
+        # A model trained with extra molecule descriptors cannot be run from the
+        # graph alone, so it gets the structure without colouring - as v1 does.
+        if (load_ckpt_meta(ckpt_id) or {}).get('molecule_featurizer'):
+            svg = plain_svg(smiles)
+            if svg is None:
+                return jsonify({'error': 'Could not render this molecule.'}), 400
+            return jsonify({'svg': svg, 'has_attribution': False})
         svgs, attributed = v2_attribution_svgs(ckpt_id, model_paths, [smiles],
                                                gpu=request.args.get('gpu'))
         svg = svgs[0] if svgs else None

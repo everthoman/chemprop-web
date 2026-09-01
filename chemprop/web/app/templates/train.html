@@ -88,11 +88,11 @@
         <br>
 
         <h5>Model</h5>
-        {% set bk = settings.backend or 'v1' %}
+        {% set bk = settings.backend or ('v2' if chemprop2_available else 'v1') %}
         {% set fnd_on = settings.foundationEnabled != 'False' %}
         <div class="btn-group" id="backendSelect" data-toggle="buttons">
           <label class="btn btn-primary {% if bk == 'v1' %}active{% endif %}">
-            <input type="radio" name="backend" value="v1" autocomplete="off" {% if bk == 'v1' %}checked{% endif %}> D-MPNN (chemprop 1)
+            <input type="radio" name="backend" value="v1" autocomplete="off" {% if bk == 'v1' %}checked{% endif %}> D-MPNN (chemprop 1, legacy)
           </label>
           {% if chemprop2_available %}
           <label class="btn btn-primary {% if bk == 'v2' %}active{% endif %}">
@@ -135,16 +135,13 @@
             </label>
         </div>
         <div id="v2Notice" class="text-muted" style="display:{% if bk == 'v2' %}block{% else %}none{% endif %}; margin-top:4px; font-size:0.9em;">
-            Extra molecule-level features are not available for chemprop 2 models. Upload a config from a chemprop 2 hyperopt run below to reuse its settings.
+            Upload a config from a chemprop 2 hyperopt run below to reuse its settings.
         </div>
         <script>
             $(function() {
                 function syncBackend() {
                     var v2 = $('input[name="backend"]:checked').val() === 'v2';
                     $('#foundationSection, #v2Notice').toggle(v2);
-                    // These are chemprop 1.x-only code paths on the server.
-                    $('select[name="featuresGenerator"]').prop('disabled', v2);
-                    $('#featuresGeneratorSection').toggle(!v2);
                 }
                 function syncFoundation() {
                     var on = $('#foundationCheckbox').is(':checked');

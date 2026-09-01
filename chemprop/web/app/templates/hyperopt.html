@@ -33,11 +33,11 @@
         <br>
 
         <h5>Model</h5>
-        {% set bk = settings.backend or 'v1' %}
+        {% set bk = settings.backend or ('v2' if chemprop2_available else 'v1') %}
         {% set fnd_on = settings.foundationEnabled != 'False' %}
         <div class="btn-group" id="backendSelect" data-toggle="buttons">
           <label class="btn btn-primary {% if bk == 'v1' %}active{% endif %}">
-            <input type="radio" name="backend" value="v1" autocomplete="off" {% if bk == 'v1' %}checked{% endif %}> D-MPNN (chemprop 1)
+            <input type="radio" name="backend" value="v1" autocomplete="off" {% if bk == 'v1' %}checked{% endif %}> D-MPNN (chemprop 1, legacy)
           </label>
           {% if chemprop2_available %}
           <label class="btn btn-primary {% if bk == 'v2' %}active{% endif %}">
