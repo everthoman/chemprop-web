@@ -107,14 +107,23 @@
                     <input type="checkbox" id="foundationCheckbox" {% if fnd_on %}checked{% endif %}>
                     Finetune from a foundation model
                 </label>
-                <small class="text-muted">&nbsp; starts from weights pretrained on millions of molecules — usually the better choice on small datasets</small>
+                <small class="text-muted">&nbsp; starts from weights pretrained on millions of molecules, or from one of your own models trained on a larger set — usually the better choice on small datasets</small>
             </div>
             <div id="foundationOptions" style="display:{% if fnd_on %}block{% else %}none{% endif %}; margin-left:20px; margin-top:4px;">
                 <label style="font-weight:normal;">Pretrained on
                     <select name="foundation" id="foundationSelect" style="margin-left:8px;">
-                        {% for fm in foundation_models %}
-                        <option value="{{ fm }}" {% if settings.foundation == fm %}selected{% endif %}>{{ fm }}</option>
-                        {% endfor %}
+                        <optgroup label="Pretrained foundation models">
+                            {% for fm in foundation_models %}
+                            <option value="{{ fm }}" {% if settings.foundation == fm %}selected{% endif %}>{{ fm }}</option>
+                            {% endfor %}
+                        </optgroup>
+                        {% if foundation_checkpoints %}
+                        <optgroup label="Your earlier chemprop 2 checkpoints">
+                            {% for ck in foundation_checkpoints %}
+                            <option value="ckpt:{{ ck['id'] }}" {% if settings.foundation == 'ckpt:' ~ ck['id'] %}selected{% endif %}>{{ ck['ckpt_name'] }}</option>
+                            {% endfor %}
+                        </optgroup>
+                        {% endif %}
                     </select>
                 </label>
             </div>

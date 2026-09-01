@@ -424,6 +424,65 @@ def mondrian_category(p, thr):
     return 'none'
 
 
+FOUNDATION_CKPT_PREFIX = 'ckpt:'
+
+
+def foundation_checkpoints(user_id):
+    """The user's chemprop 2 checkpoints, offered as starting points for a new run.
+
+    chemprop 2 accepts a path to any of its own models for --from-foundation and
+    reuses that model's message passing, so a model trained here on a large set can
+    seed a run on a small one — often a better starting point than a generic
+    foundation model, since it already knows the chemistry in question.
+    """
+    rows = db.query_db(
+        "SELECT id, ckpt_name FROM ckpt WHERE associated_user = ? AND backend = 'v2' "
+        "ORDER BY id DESC", (user_id or app.config['DEFAULT_USER_ID'],))
+    return [row for row in rows if db.get_models(row['id'])]
+
+
+def resolve_foundation(value, user_id):
+    """Maps a submitted foundation choice to ``(cli_value, label)``.
+
+    ``cli_value`` is what --from-foundation receives: a registry name, or the path
+    to one of the user's own models. Raises ValueError with a message to show if
+    the choice cannot be honoured.
+    """
+    if not value:
+        return None, None
+
+    if value in app.config['FOUNDATION_MODELS']:
+        return value, value
+
+    if not value.startswith(FOUNDATION_CKPT_PREFIX):
+        raise ValueError(f'Unknown foundation model "{value}".')
+
+    try:
+        ckpt_id = int(value[len(FOUNDATION_CKPT_PREFIX):])
+    except ValueError:
+        raise ValueError('That starting checkpoint is not valid.')
+
+    # Only the user's own chemprop 2 checkpoints, so a submitted id cannot reach
+    # another user's models or an arbitrary path.
+    row = db.query_db(
+        "SELECT id, ckpt_name FROM ckpt WHERE id = ? AND associated_user = ? "
+        "AND backend = 'v2'", (ckpt_id, user_id or app.config['DEFAULT_USER_ID']), one=True)
+    if row is None:
+        raise ValueError('That starting checkpoint is no longer available.')
+
+    models = db.get_models(ckpt_id)
+    if not models:
+        raise ValueError(f'Checkpoint "{row["ckpt_name"]}" has no model files to start from.')
+
+    # chemprop takes a single message passing block, so an ensemble contributes
+    # its first member.
+    path = os.path.join(app.config['CHECKPOINT_FOLDER'], f'{models[0]["id"]}.pt')
+    if not os.path.exists(path):
+        raise ValueError(f'The model file for "{row["ckpt_name"]}" is missing.')
+
+    return path, f'checkpoint: {row["ckpt_name"]}'
+
+
 def v2_attribution_script() -> str:
     return os.path.join(os.path.dirname(os.path.realpath(__file__)), 'v2_attribution.py')
 
@@ -1351,6 +1410,7 @@ def render_train(**kwargs):
                            gpus=app.config['GPUS'],
                            chemprop2_available=app.config['CHEMPROP2_AVAILABLE'],
                            foundation_models=app.config['FOUNDATION_MODELS'],
+                           foundation_checkpoints=foundation_checkpoints(current_user_id()),
                            default_batch_size=app.config['CHEMPROP2_BATCH_SIZE'],
                            data_upload_warnings=data_upload_warnings,
                            data_upload_errors=data_upload_errors,
@@ -1432,11 +1492,13 @@ def train():
 
     # Finetuning from a foundation model is an option within the v2 backend, not the
     # reason for it: chemprop 2 also trains a plain D-MPNN from scratch.
-    foundation = request.form.get('foundation', '').strip() or None
+    foundation_choice = request.form.get('foundation', '').strip() or None
     if backend != 'v2' or request.form.get('foundationEnabled', 'True') == 'False':
-        foundation = None
-    elif foundation and foundation not in app.config['FOUNDATION_MODELS']:
-        errors.append(f'Unknown foundation model "{foundation}".')
+        foundation_choice = None
+    try:
+        foundation, foundation_label = resolve_foundation(foundation_choice, current_user_id())
+    except ValueError as e:
+        errors.append(str(e))
         return render_train(warnings=warnings, errors=errors)
 
     # Batch size is offered for the v2 backend only. chemprop 2 defaults to 64,
@@ -1596,7 +1658,7 @@ def train():
                                         args.ensemble_size,
                                         len(targets),
                                         backend=backend,
-                                        foundation=foundation)
+                                        foundation=foundation_label)
 
     # The v1 backend trains into a TemporaryDirectory that is gone by the time this
     # request returns. A v2 run must outlive it: the background visualization thread
@@ -1714,7 +1776,7 @@ def train():
     # it is the only source: their checkpoints can only be opened by chemprop 2.x.
     write_ckpt_meta(ckpt_id,
                     backend=backend,
-                    foundation=foundation,
+                    foundation=foundation_label,
                     task_names=list(args.task_names),
                     dataset_type=dataset_type,
                     features_generator=None if features_generator == 'none' else features_generator,
@@ -1801,6 +1863,7 @@ def render_hyperopt(**kwargs):
     return render_template('hyperopt.html',
                            chemprop2_available=app.config['CHEMPROP2_AVAILABLE'],
                            foundation_models=app.config['FOUNDATION_MODELS'],
+                           foundation_checkpoints=foundation_checkpoints(current_user_id()),
                            datasets=db.get_datasets(current_user_id()),
                            cuda=app.config['CUDA'],
                            gpus=app.config['GPUS'],
@@ -1856,11 +1919,13 @@ def hyperopt_page():
                       f'found on this server.')
         return render_hyperopt(warnings=warnings, errors=errors)
 
-    foundation = request.form.get('foundation', '').strip() or None
+    foundation_choice = request.form.get('foundation', '').strip() or None
     if backend != 'v2' or request.form.get('foundationEnabled', 'True') == 'False':
-        foundation = None
-    elif foundation and foundation not in app.config['FOUNDATION_MODELS']:
-        errors.append(f'Unknown foundation model "{foundation}".')
+        foundation_choice = None
+    try:
+        foundation, _ = resolve_foundation(foundation_choice, current_user_id())
+    except ValueError as e:
+        errors.append(str(e))
         return render_hyperopt(warnings=warnings, errors=errors)
 
     data_path = os.path.join(app.config['DATA_FOLDER'], f'{data_name}.csv')
