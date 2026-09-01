@@ -56,6 +56,7 @@ def build_train_cmd(conda_exe: str,
                     seed: int,
                     foundation: Optional[str] = None,
                     patience: Optional[int] = None,
+                    min_delta: float = 0.0,
                     accelerator: str = 'cpu') -> List[str]:
     """Builds a ``chemprop train`` command line.
 
@@ -90,6 +91,8 @@ def build_train_cmd(conda_exe: str,
 
     if patience:
         cmd += ['--patience', str(patience)]
+        if min_delta:
+            cmd += ['--min-delta', str(min_delta)]
 
     return cmd
 

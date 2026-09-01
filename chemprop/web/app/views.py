@@ -1369,9 +1369,6 @@ def train():
         if request.form.get('configFileContent', '').strip():
             warnings.append('Hyperopt configs are not supported by the chemprop 2 backend '
                             'and were ignored.')
-        if patience and min_delta:
-            warnings.append('The early-stopping stability band is not supported by the '
-                            'chemprop 2 backend; only the window was applied.')
 
     # Handle optional hyperopt config (content sent as hidden field via FileReader)
     config_content = request.form.get('configFileContent', '').strip() if backend == 'v1' else ''
@@ -1517,7 +1514,7 @@ def train():
                 data_path=data_path, output_dir=temp_dir, task_type=dataset_type,
                 task_names=args.task_names, smiles_column=get_header(data_path)[0],
                 epochs=epochs, ensemble_size=ensemble_size, split_type=split_type,
-                seed=seed, foundation=foundation, patience=patience,
+                seed=seed, foundation=foundation, patience=patience, min_delta=min_delta,
                 accelerator=backends.accelerator_for(gpu))
             train_proc = backends.run_cli(train_cmd, CURRENT_LOG_PATH,
                                           backends.subprocess_env(gpu))
@@ -1539,7 +1536,7 @@ def train():
         # Only treat as cancelled if the process was actually killed (negative
         # exitcode). A cancel click that arrived after natural completion should
         # not suppress the training results.
-        was_killed = cancelled and train_proc.exitcode is not None and train_proc.exitcode < 0
+        was_killed = cancelled and train_proc.exitcode not in (0, None)
 
         if was_killed or train_proc.exitcode not in (0, None):
             if use_progress_bar:
