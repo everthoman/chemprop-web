@@ -31,7 +31,7 @@ from chemprop.constants import MODEL_FILE_NAME, TRAIN_LOGGER_NAME
 from chemprop.data import get_data, get_header, get_smiles, get_task_names, validate_data, split_data, empty_cache
 from chemprop.train import make_predictions, run_training
 from chemprop.utils import create_logger, load_task_names, load_args
-from chemprop.web.app.atom_attribution import compute_attributions
+from chemprop.web.app.atom_attribution import compute_attributions, plain_svg
 from chemprop.web.app.applicability import ApplicabilityDomain, load_training_smiles
 from chemprop.web.app import backends
 
@@ -2191,7 +2191,7 @@ def predict():
     # reads chemprop 1.x model internals, so v2 checkpoints get no highlighting.
     flat_smiles = [s[0] for s in smiles[:10]]
     if backend == 'v2':
-        attribution_svgs = [None] * len(flat_smiles)
+        attribution_svgs = [plain_svg(s) for s in flat_smiles]
     else:
         device = None if (gpu is None or gpu == 'None') else torch.device(f'cuda:{gpu}')
         attribution_svgs = compute_attributions(model_paths, flat_smiles, device=device)
@@ -2283,7 +2283,13 @@ def get_attribution():
         return jsonify({'error': 'Missing smiles or ckpt_id'}), 400
 
     if ckpt_backend(ckpt_id) == 'v2':
-        return jsonify({'error': 'Atom attribution is not available for chemprop 2 models yet.'}), 400
+        # Attribution reads chemprop 1.x model internals, but the plot still wants a
+        # picture of the molecule: draw it without highlighting rather than leaving
+        # the tooltip waiting on a response that never carries an SVG.
+        svg = plain_svg(smiles)
+        if svg is None:
+            return jsonify({'error': 'Could not render this molecule.'}), 400
+        return jsonify({'svg': svg, 'has_attribution': False})
 
     models = db.get_models(ckpt_id)
     if not models:

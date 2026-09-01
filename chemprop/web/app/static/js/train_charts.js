@@ -128,6 +128,17 @@ function initCharts(plotData, datasetType, ckptId) {
         positionTooltip(clientX, clientY);
     }
 
+    function showUnavailable(clientX, clientY, actual, pred, split) {
+        tooltip.innerHTML =
+            '<div style="font:12px monospace;color:#555;margin-bottom:4px">' +
+            (split === 'train' ? 'Train' : 'Test') +
+            '  |  Exp: ' + actual.toFixed(3) +
+            '  |  Pred: ' + pred.toFixed(3) + '</div>' +
+            '<div style="color:#aaa;font-size:12px">Structure unavailable</div>';
+        tooltip.style.display = 'block';
+        positionTooltip(clientX, clientY);
+    }
+
     function showSVG(clientX, clientY, actual, pred, split, smiles, svg, hasAttribution) {
         var legend = hasAttribution
             ? '<div style="font-size:0.72em;color:#666;text-align:center;margin-top:2px">' +
@@ -175,6 +186,8 @@ function initCharts(plotData, datasetType, ckptId) {
                     if (data.svg) {
                         svgCache[smiles] = { svg: data.svg, hasAttribution: !!data.has_attribution };
                         if (lastKey === smiles) showSVG(cx, cy, actual, pred, split, smiles, data.svg, !!data.has_attribution);
+                    } else if (lastKey === smiles) {
+                        showUnavailable(cx, cy, actual, pred, split);
                     }
                 })
                 .catch(function(e) { console.warn('Attribution fetch failed:', e); });

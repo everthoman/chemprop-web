@@ -13,7 +13,7 @@ from rdkit.Chem.Draw import rdMolDraw2D, SimilarityMaps
 from chemprop.utils import load_checkpoint, load_args
 
 
-def _plain_svg(smiles_str: str, width: int = 400, height: int = 300) -> Optional[str]:
+def plain_svg(smiles_str: str, width: int = 400, height: int = 300) -> Optional[str]:
     """Render a plain molecule SVG with no atom highlighting."""
     mol = Chem.MolFromSmiles(smiles_str)
     if mol is None:
@@ -116,7 +116,7 @@ def compute_attributions(model_paths: List[str], smiles_list: List[str],
             try:
                 train_args = load_args(model_paths[0])
                 if train_args.features_generator is not None:
-                    svgs.append(_plain_svg(smiles_str))
+                    svgs.append(plain_svg(smiles_str))
                     continue
             except Exception:
                 pass
@@ -132,7 +132,7 @@ def compute_attributions(model_paths: List[str], smiles_list: List[str],
                 logging.getLogger(__name__).warning(f"Attribution failed for {path}: {e}")
 
         if not all_weights:
-            svgs.append(_plain_svg(smiles_str))
+            svgs.append(plain_svg(smiles_str))
             continue
 
         avg_weights = np.mean(all_weights, axis=0)
