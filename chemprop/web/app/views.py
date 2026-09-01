@@ -441,11 +441,11 @@ def foundation_checkpoints(user_id):
     return [row for row in rows if db.get_models(row['id'])]
 
 
-def resolve_foundation(value, user_id):
+def resolve_foundation(value):
     """Maps a submitted foundation choice to ``(cli_value, label)``.
 
     ``cli_value`` is what --from-foundation receives: a registry name, or the path
-    to one of the user's own models. Raises ValueError with a message to show if
+    to one of the current user's own models. Raises ValueError with a message to show if
     the choice cannot be honoured.
     """
     if not value:
@@ -464,10 +464,8 @@ def resolve_foundation(value, user_id):
 
     # Only the user's own chemprop 2 checkpoints, so a submitted id cannot reach
     # another user's models or an arbitrary path.
-    row = db.query_db(
-        "SELECT id, ckpt_name FROM ckpt WHERE id = ? AND associated_user = ? "
-        "AND backend = 'v2'", (ckpt_id, user_id or app.config['DEFAULT_USER_ID']), one=True)
-    if row is None:
+    row = owned_ckpt(ckpt_id)
+    if row is None or row['backend'] != 'v2':
         raise ValueError('That starting checkpoint is no longer available.')
 
     models = db.get_models(ckpt_id)
@@ -1360,6 +1358,35 @@ def current_user_id() -> Optional[int]:
     return session.get('user_id')
 
 
+def owned_ckpt(ckpt_id):
+    """The current user's checkpoint row, or None when it is not theirs.
+
+    Checkpoint ids are small sequential integers that appear in URLs and forms, so
+    every route taking one has to look it up scoped to the requester rather than
+    trust the id it was handed.
+    """
+    try:
+        ckpt_id = int(ckpt_id)
+    except (TypeError, ValueError):
+        return None
+
+    return db.query_db('SELECT * FROM ckpt WHERE id = ? AND associated_user = ?',
+                       (ckpt_id, current_user_id() or app.config['DEFAULT_USER_ID']),
+                       one=True)
+
+
+def owned_dataset(dataset_id):
+    """The current user's dataset row, or None when it is not theirs."""
+    try:
+        dataset_id = int(dataset_id)
+    except (TypeError, ValueError):
+        return None
+
+    return db.query_db('SELECT * FROM dataset WHERE id = ? AND associated_user = ?',
+                       (dataset_id, current_user_id() or app.config['DEFAULT_USER_ID']),
+                       one=True)
+
+
 @app.before_request
 def require_login():
     """Redirects unauthenticated requests to the login page.
@@ -1503,9 +1530,17 @@ def train():
     }
 
     # Get arguments
-    data_name, epochs, ensemble_size, checkpoint_name = \
-        request.form['dataName'], int(request.form['epochs']), \
-        int(request.form['ensembleSize']), request.form['checkpointName']
+    epochs, ensemble_size, checkpoint_name = \
+        int(request.form['epochs']), int(request.form['ensembleSize']), \
+        request.form['checkpointName']
+
+    # The dataset id becomes a file path below, so it is resolved through the
+    # registry scoped to this user rather than pasted into one.
+    dataset_row = owned_dataset(request.form.get('dataName'))
+    if dataset_row is None:
+        errors.append('That dataset is not available.')
+        return render_train(warnings=warnings, errors=errors)
+    data_name = dataset_row['id']
     gpu = request.form.get('gpu')
     patience_raw = request.form.get('patience', '').strip()
     # Early stopping is gated by a checkbox on the form: when unchecked the
@@ -1550,7 +1585,7 @@ def train():
     if backend != 'v2' or request.form.get('foundationEnabled', 'True') == 'False':
         foundation_choice = None
     try:
-        foundation, foundation_label = resolve_foundation(foundation_choice, current_user_id())
+        foundation, foundation_label = resolve_foundation(foundation_choice)
     except ValueError as e:
         errors.append(str(e))
         return render_train(warnings=warnings, errors=errors)
@@ -1957,7 +1992,11 @@ def hyperopt_page():
     }
 
     # Get form fields
-    data_name = request.form['dataName']
+    dataset_row = owned_dataset(request.form.get('dataName'))
+    if dataset_row is None:
+        errors.append('That dataset is not available.')
+        return render_hyperopt(warnings=warnings, errors=errors)
+    data_name = dataset_row['id']
     epochs = int(request.form['epochs'])
     num_iters = int(request.form['numIters'])
     dataset_type = request.form.get('datasetType', 'regression')
@@ -1977,7 +2016,7 @@ def hyperopt_page():
     if backend != 'v2' or request.form.get('foundationEnabled', 'True') == 'False':
         foundation_choice = None
     try:
-        foundation, _ = resolve_foundation(foundation_choice, current_user_id())
+        foundation, _ = resolve_foundation(foundation_choice)
     except ValueError as e:
         errors.append(str(e))
         return render_hyperopt(warnings=warnings, errors=errors)
@@ -2249,6 +2288,8 @@ def predict():
 
     # Get arguments
     ckpt_id = request.form['checkpointName']
+    if owned_ckpt(ckpt_id) is None:
+        return render_predict(errors=['That checkpoint is not available.'])
 
     identifiers: Optional[List[Optional[str]]] = None
 
@@ -2560,6 +2601,9 @@ def get_attribution():
     if not smiles or not ckpt_id:
         return jsonify({'error': 'Missing smiles or ckpt_id'}), 400
 
+    if owned_ckpt(ckpt_id) is None:
+        return jsonify({'error': 'Checkpoint not found'}), 404
+
     models = db.get_models(ckpt_id)
     if not models:
         return jsonify({'error': 'No models found'}), 404
@@ -2696,8 +2740,10 @@ def download_data(dataset: int):
 
     :param dataset: The id of the dataset to download.
     """
-    row = db.query_db('SELECT dataset_name FROM dataset WHERE id = ?', (dataset,), one=True)
-    download_name = f'{row["dataset_name"]}.csv' if row else f'{dataset}.csv'
+    row = owned_dataset(dataset)
+    if row is None:
+        return 'Dataset not found', 404
+    download_name = f'{row["dataset_name"]}.csv'
     return send_from_directory(app.config['DATA_FOLDER'], f'{dataset}.csv', as_attachment=True,
                                download_name=download_name, cache_timeout=-1)
 
@@ -2710,6 +2756,8 @@ def delete_data(dataset: int):
 
     :param dataset: The id of the dataset to delete.
     """
+    if owned_dataset(dataset) is None:
+        return 'Dataset not found', 404
     db.delete_dataset(dataset)
     os.remove(os.path.join(app.config['DATA_FOLDER'], f'{dataset}.csv'))
     return redirect(url_for('data'))
@@ -2732,6 +2780,8 @@ def delete_all_data():
 @app.route('/data/rename/<int:dataset>', methods=['POST'])
 @check_not_demo
 def rename_data(dataset: int):
+    if owned_dataset(dataset) is None:
+        return jsonify(success=False, error='Dataset not found.'), 404
     new_name = request.form.get('name', '').strip()
     if not new_name:
         return jsonify(success=False, error='Name cannot be empty.')
@@ -2746,6 +2796,8 @@ def rename_data(dataset: int):
 @check_not_demo
 def checkpoint_results(ckpt_id: int):
     """Returns the saved training results JSON for a checkpoint."""
+    if owned_ckpt(ckpt_id) is None:
+        return jsonify(error='No results saved for this checkpoint'), 404
     results_path = os.path.join(app.config['CHECKPOINT_FOLDER'], f'{ckpt_id}_results.json')
     if not os.path.exists(results_path):
         return jsonify(error='No results saved for this checkpoint'), 404
@@ -2761,6 +2813,8 @@ def checkpoint_results(ckpt_id: int):
 @check_not_demo
 def download_checkpoint_predictions(ckpt_id: int):
     """Downloads the permanent train/test predictions CSV for a checkpoint."""
+    if owned_ckpt(ckpt_id) is None:
+        return 'Predictions not available', 404
     preds_path = os.path.join(app.config['CHECKPOINT_FOLDER'], f'{ckpt_id}_train_test_preds.csv')
     if not os.path.exists(preds_path):
         return 'Predictions not available', 404
@@ -2924,7 +2978,9 @@ def download_checkpoint(checkpoint: int):
 
     :param checkpoint: The name of the checkpoint to download.
     """
-    ckpt = db.query_db('SELECT * FROM ckpt WHERE id = ?', (checkpoint,), one=True)
+    ckpt = owned_ckpt(checkpoint)
+    if ckpt is None:
+        return 'Checkpoint not found', 404
     models = db.get_models(checkpoint)
 
     model_data = io.BytesIO()
@@ -2953,6 +3009,8 @@ def delete_checkpoint(checkpoint: int):
 
     :param checkpoint: The id of the checkpoint to delete.
     """
+    if owned_ckpt(checkpoint) is None:
+        return 'Checkpoint not found', 404
     for suffix in ('_results.json', '_train_test_preds.csv', '_calibration.csv', '_meta.json'):
         sidecar = os.path.join(app.config['CHECKPOINT_FOLDER'], f'{checkpoint}{suffix}')
         if os.path.exists(sidecar):
@@ -2975,6 +3033,8 @@ def delete_all_checkpoints():
 @app.route('/checkpoints/rename/<int:checkpoint>', methods=['POST'])
 @check_not_demo
 def rename_checkpoint(checkpoint: int):
+    if owned_ckpt(checkpoint) is None:
+        return jsonify(success=False, error='Checkpoint not found.'), 404
     new_name = request.form.get('name', '').strip()
     if not new_name:
         return jsonify(success=False, error='Name cannot be empty.')
