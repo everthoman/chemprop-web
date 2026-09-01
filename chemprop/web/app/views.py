@@ -1113,8 +1113,10 @@ def receiver():
         val_curves = backends.val_curves(CURRENT_V2_DIR)
     elif CURRENT_LOG_PATH and os.path.exists(CURRENT_LOG_PATH):
         val_curves = _parse_val_curves(CURRENT_LOG_PATH)
+    # Read the shared array through .value: iterating a multiprocessing char array
+    # yields one-byte bytes objects, so bytes(TRAINING_MODE) raises a TypeError.
     return jsonify(progress=PROGRESS.value, training=TRAINING.value,
-                   mode=bytes(TRAINING_MODE).decode().rstrip('\x00'), val_curves=val_curves)
+                   mode=TRAINING_MODE.value.decode(), val_curves=val_curves)
 
 
 @app.route('/cancel', methods=['POST'])
