@@ -1302,6 +1302,23 @@ def format_float_list(array: List[float], precision: int = 4) -> List[str]:
     return [format_float(f, precision) for f in array]
 
 
+@app.teardown_request
+def release_job_after_error(exception):
+    """Drops a job whose request died, so the page does not poll a run that is over.
+
+    Every view removes its own job on the way out, but an unhandled exception
+    skips that, leaving /receiver reporting a job that will never finish.
+    """
+    if exception is None:
+        return
+    try:
+        job = current_job()
+        if job is not None and not job.is_running():
+            end_job(job)
+    except Exception:
+        pass
+
+
 @app.route('/receiver', methods=['POST'])
 @check_not_demo
 def receiver():

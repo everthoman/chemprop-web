@@ -510,7 +510,7 @@ def attribution_worker(python_bin: str, script_path: str, env: Dict[str, str],
 def atom_weights(python_bin: str, script_path: str, model_paths: Sequence[str],
                  smiles_list: Sequence[str], env: Dict[str, str],
                  stderr_path: Optional[str] = None,
-                 timeout: float = 120.0) -> List[Optional[List[float]]]:
+                 timeout: float = 30.0) -> List[Optional[List[float]]]:
     """Per-atom attribution weights from chemprop 2 models.
 
     Runs ``v2_attribution.py`` under the v2 interpreter, since the weights come

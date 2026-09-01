@@ -32,6 +32,11 @@ def ensure_schema():
     migrations instead, and is safe to call on every startup.
     """
     cols = {row['name'] for row in query_db('PRAGMA table_info(ckpt)')}
+    if not cols:
+        # The file exists but holds no tables yet (a fresh deployment, or an
+        # interrupted init); init_db will create them with the current schema.
+        return
+
     db = get_db()
 
     # Which chemprop version trained a checkpoint: 'v1' (in-process chemprop 1.x)

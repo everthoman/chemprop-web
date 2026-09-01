@@ -179,7 +179,10 @@ def prepare(args):
     if seen:
         print(f'resuming: {len(seen):,} structures already in the corpus')
 
-    chunk_index = 0
+    # Continue after the chunks already on disk. Starting at zero would make every
+    # new chunk collide with an existing filename, and the molecules in it would be
+    # dropped rather than written.
+    chunk_index = len(glob.glob(os.path.join(args.out_dir, f'{CHUNK_PREFIX}*.parquet')))
     batch_smiles, batch_keys = [], []
     kept = rejected = duplicates = 0
 
@@ -189,14 +192,15 @@ def prepare(args):
         if not batch_smiles:
             return
         path = os.path.join(args.out_dir, f'{CHUNK_PREFIX}{chunk_index:06d}.parquet')
-        if not os.path.exists(path):
-            frame = describe(batch_smiles, args.nproc)
-            frame.insert(0, 'smiles', batch_smiles)
-            frame.to_parquet(path, index=False)
-            with open(path + KEYS_SUFFIX, 'w') as f:
-                f.write('\n'.join(batch_keys) + '\n')
-            print(f'  wrote {os.path.basename(path)}: {len(frame):,} molecules, '
-                  f'{frame.shape[1] - 1} descriptors')
+        frame = describe(batch_smiles, args.nproc)
+        frame.insert(0, 'smiles', batch_smiles)
+        frame.to_parquet(path, index=False)
+        # The keys are written after the chunk, so an interrupted write leaves the
+        # molecules eligible again rather than recorded as done.
+        with open(path + KEYS_SUFFIX, 'w') as f:
+            f.write('\n'.join(batch_keys) + '\n')
+        print(f'  wrote {os.path.basename(path)}: {len(frame):,} molecules, '
+              f'{frame.shape[1] - 1} descriptors')
         chunk_index += 1
         batch_smiles, batch_keys = [], []
 
@@ -235,7 +239,12 @@ def sample_values(chunks, sample_rows):
     frames = []
     for path in chunks:
         frame = pd.read_parquet(path)
-        frames.append(frame.head(per_chunk).drop(columns=['smiles']))
+        # Sampled rather than taken from the head: a corpus exported in sorted
+        # order (by identifier, mass, series) would otherwise have its scaling
+        # decided by one end of that ordering.
+        if len(frame) > per_chunk:
+            frame = frame.sample(per_chunk, random_state=0)
+        frames.append(frame.drop(columns=['smiles']))
     return pd.concat(frames, ignore_index=True)
 
 
