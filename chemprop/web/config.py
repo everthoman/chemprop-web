@@ -44,6 +44,7 @@ CHEMPROP2_AVAILABLE = os.path.isdir(
 # passed straight to `chemprop train --from-foundation`.
 FOUNDATION_MODELS = ['CheMeleon']
 
-# Default batch size offered for v2 training. Larger than chemprop 2's own default
-# of 64, which leaves a modern GPU idling on the dataset sizes this app handles.
-CHEMPROP2_BATCH_SIZE = 128
+# Default batch size offered for v2 training. Kept at chemprop 2's own default:
+# raising it was measured to buy no wall-clock time (CheMeleon finetuning is
+# GPU-bound at 64 already) while costing validation loss at a fixed epoch budget.
+CHEMPROP2_BATCH_SIZE = 64
