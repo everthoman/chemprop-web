@@ -43,6 +43,10 @@ CONDA_EXE = os.environ.get('CONDA_EXE') or shutil.which('conda') or \
 CHEMPROP2_BIN = os.environ.get('CHEMPROP2_BIN') or os.path.join(
     os.path.dirname(os.path.dirname(CONDA_EXE)), 'envs', CHEMPROP2_ENV, 'bin', 'chemprop')
 
+# The environment's interpreter, used to run helper scripts (atom attribution)
+# that need the chemprop 2 API rather than its CLI.
+CHEMPROP2_PYTHON = os.path.join(os.path.dirname(CHEMPROP2_BIN), 'python')
+
 # The v2 backend is offered on the Train page only when its environment is present.
 CHEMPROP2_AVAILABLE = os.path.isfile(CHEMPROP2_BIN)
 

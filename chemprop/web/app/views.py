@@ -31,7 +31,8 @@ from chemprop.constants import MODEL_FILE_NAME, TRAIN_LOGGER_NAME
 from chemprop.data import get_data, get_header, get_smiles, get_task_names, validate_data, split_data, empty_cache
 from chemprop.train import make_predictions, run_training
 from chemprop.utils import create_logger, load_task_names, load_args
-from chemprop.web.app.atom_attribution import compute_attributions, plain_svg
+from chemprop.web.app.atom_attribution import (compute_attributions, plain_svg,
+                                               render_attribution_svg)
 from chemprop.web.app.applicability import ApplicabilityDomain, load_training_smiles
 from chemprop.web.app import backends
 
@@ -421,6 +422,27 @@ def mondrian_category(p, thr):
     if active_in and inactive_in:
         return 'uncertain'
     return 'none'
+
+
+def v2_attribution_svgs(ckpt_id, model_paths, smiles_list, gpu=None):
+    """Attribution SVGs for a chemprop 2 checkpoint, as ``(svgs, attributed)``.
+
+    The weights come from a helper run under the v2 interpreter (this process
+    cannot load a v2 checkpoint); the drawing is shared with the v1 path, so both
+    backends colour a structure the same way. Molecules whose weights could not be
+    computed fall back to a plain depiction rather than to nothing.
+    """
+    script = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'v2_attribution.py')
+    weights = backends.atom_weights(
+        app.config['CHEMPROP2_PYTHON'], script, model_paths, smiles_list,
+        backends.subprocess_env(gpu))
+
+    svgs, attributed = [], []
+    for smiles, w in zip(smiles_list, weights):
+        svg = render_attribution_svg(smiles, np.array(w, dtype=float)) if w else None
+        attributed.append(svg is not None)
+        svgs.append(svg if svg is not None else plain_svg(smiles))
+    return svgs, attributed
 
 
 def _v2_valid_mask(smiles):
@@ -2241,7 +2263,7 @@ def predict():
     # reads chemprop 1.x model internals, so v2 checkpoints get no highlighting.
     flat_smiles = [s[0] for s in smiles[:10]]
     if backend == 'v2':
-        attribution_svgs = [plain_svg(s) for s in flat_smiles]
+        attribution_svgs, _ = v2_attribution_svgs(ckpt_id, model_paths, flat_smiles, gpu=gpu)
     else:
         device = None if (gpu is None or gpu == 'None') else torch.device(f'cuda:{gpu}')
         attribution_svgs = compute_attributions(model_paths, flat_smiles, device=device)
@@ -2332,20 +2354,23 @@ def get_attribution():
     if not smiles or not ckpt_id:
         return jsonify({'error': 'Missing smiles or ckpt_id'}), 400
 
-    if ckpt_backend(ckpt_id) == 'v2':
-        # Attribution reads chemprop 1.x model internals, but the plot still wants a
-        # picture of the molecule: draw it without highlighting rather than leaving
-        # the tooltip waiting on a response that never carries an SVG.
-        svg = plain_svg(smiles)
-        if svg is None:
-            return jsonify({'error': 'Could not render this molecule.'}), 400
-        return jsonify({'svg': svg, 'has_attribution': False})
-
     models = db.get_models(ckpt_id)
     if not models:
         return jsonify({'error': 'No models found'}), 404
 
     model_paths = [os.path.join(app.config['CHECKPOINT_FOLDER'], f'{m["id"]}.pt') for m in models]
+
+    if ckpt_backend(ckpt_id) == 'v2':
+        if Chem.MolFromSmiles(smiles) is None:
+            return jsonify({'error': 'Could not render this molecule.'}), 400
+        svgs, attributed = v2_attribution_svgs(ckpt_id, model_paths, [smiles],
+                                               gpu=request.args.get('gpu'))
+        svg = svgs[0] if svgs else None
+        if svg is None:
+            return jsonify({'error': 'Could not render this molecule.'}), 400
+        # A plain depiction comes back when the weights could not be computed; the
+        # legend must then not claim the colours mean anything.
+        return jsonify({'svg': svg, 'has_attribution': attributed[0]})
 
     try:
         train_args = load_args(model_paths[0])

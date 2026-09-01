@@ -15,6 +15,7 @@ returns, so the views and templates consuming them need no v2-specific handling.
 
 import csv
 import glob
+import json
 import os
 import signal
 import subprocess
@@ -152,6 +153,11 @@ def subprocess_env(gpu: Optional[str]) -> Dict[str, str]:
     env.pop('PYTHONPATH', None)
     env.pop('PYTHONHOME', None)
 
+    # User site-packages precede an environment's own on sys.path, so a stray
+    # ~/.local install of one of chemprop 2's dependencies would be picked up
+    # instead of the environment's. Keep the environment self-contained.
+    env['PYTHONNOUSERSITE'] = '1'
+
     if gpu is None or gpu == 'None':
         env['CUDA_VISIBLE_DEVICES'] = ''
     else:
@@ -234,6 +240,46 @@ def run_cli(cmd: Sequence[str], log_path: str, env: Dict[str, str]) -> Subproces
     popen = subprocess.Popen(cmd, stdout=log_file, stderr=subprocess.STDOUT,
                              env=env, cwd=work_dir, start_new_session=True)
     return Subprocess(popen, log_file)
+
+
+def atom_weights(python_bin: str, script_path: str, model_paths: Sequence[str],
+                 smiles_list: Sequence[str], env: Dict[str, str],
+                 timeout: float = 120.0) -> List[Optional[List[float]]]:
+    """Per-atom attribution weights from chemprop 2 models.
+
+    Runs ``v2_attribution.py`` under the v2 interpreter, since the weights come
+    from the model's own hidden states and only chemprop 2 can load its
+    checkpoints. Returns one list per SMILES, or None where the weights could not
+    be computed; failures are reported as None rather than raised, because
+    attribution is a decoration on a structure that must still be drawn.
+    """
+    request = json.dumps({'model_paths': list(model_paths), 'smiles': list(smiles_list)})
+
+    # An explicit working directory keeps the chemprop 1.x checkout this app runs
+    # from off the helper's import path: the service's working directory is that
+    # checkout, and it would otherwise shadow chemprop 2 entirely. (Python's -I
+    # would harden this further but also drops the user site-packages that this
+    # environment currently resolves some of its dependencies from.)
+    try:
+        completed = subprocess.run([python_bin, script_path], input=request,
+                                   capture_output=True, text=True, env=env,
+                                   cwd=os.path.dirname(script_path) or '.',
+                                   timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired):
+        return [None] * len(smiles_list)
+
+    if completed.returncode != 0:
+        return [None] * len(smiles_list)
+
+    try:
+        weights = json.loads(completed.stdout)['weights']
+    except (ValueError, KeyError):
+        return [None] * len(smiles_list)
+
+    if len(weights) != len(smiles_list):
+        return [None] * len(smiles_list)
+
+    return weights
 
 
 # --- output inspection ----------------------------------------------------
