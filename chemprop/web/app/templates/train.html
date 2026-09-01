@@ -88,27 +88,36 @@
 
         <h5>Model</h5>
         {% set bk = settings.backend or 'v1' %}
+        {% set fnd_on = settings.foundationEnabled != 'False' %}
         <div class="btn-group" id="backendSelect" data-toggle="buttons">
           <label class="btn btn-primary {% if bk == 'v1' %}active{% endif %}">
             <input type="radio" name="backend" value="v1" autocomplete="off" {% if bk == 'v1' %}checked{% endif %}> D-MPNN (chemprop 1)
           </label>
           {% if chemprop2_available %}
           <label class="btn btn-primary {% if bk == 'v2' %}active{% endif %}">
-            <input type="radio" name="backend" value="v2" autocomplete="off" {% if bk == 'v2' %}checked{% endif %}> Foundation model (chemprop 2)
+            <input type="radio" name="backend" value="v2" autocomplete="off" {% if bk == 'v2' %}checked{% endif %}> D-MPNN (chemprop 2)
           </label>
           {% endif %}
         </div>
         {% if chemprop2_available %}
         <div id="foundationSection" style="display:{% if bk == 'v2' %}block{% else %}none{% endif %}; margin-top:6px;">
-            <label style="font-weight:normal;">Pretrained on
-                <select name="foundation" id="foundationSelect" style="margin-left:8px;">
-                    {% for fm in foundation_models %}
-                    <option value="{{ fm }}" {% if settings.foundation == fm %}selected{% endif %}>{{ fm }}</option>
-                    {% endfor %}
-                    <option value="" {% if bk == 'v2' and not settings.foundation %}selected{% endif %}>None (train from scratch)</option>
-                </select>
-            </label>
-            <small class="text-muted">&nbsp; finetunes a model pretrained on millions of molecules — usually the better choice on small datasets</small>
+            <input type="hidden" name="foundationEnabled" id="foundationEnabled" value="{{ 'True' if fnd_on else 'False' }}">
+            <div class="checkbox" style="margin-top:0; margin-bottom:0;">
+                <label>
+                    <input type="checkbox" id="foundationCheckbox" {% if fnd_on %}checked{% endif %}>
+                    Finetune from a foundation model
+                </label>
+                <small class="text-muted">&nbsp; starts from weights pretrained on millions of molecules — usually the better choice on small datasets</small>
+            </div>
+            <div id="foundationOptions" style="display:{% if fnd_on %}block{% else %}none{% endif %}; margin-left:20px; margin-top:4px;">
+                <label style="font-weight:normal;">Pretrained on
+                    <select name="foundation" id="foundationSelect" style="margin-left:8px;">
+                        {% for fm in foundation_models %}
+                        <option value="{{ fm }}" {% if settings.foundation == fm %}selected{% endif %}>{{ fm }}</option>
+                        {% endfor %}
+                    </select>
+                </label>
+            </div>
         </div>
         <div id="v2Notice" class="text-muted" style="display:{% if bk == 'v2' %}block{% else %}none{% endif %}; margin-top:4px; font-size:0.9em;">
             Extra molecule-level features, hyperopt configs and atom attribution are not available for chemprop 2 models.
@@ -123,8 +132,15 @@
                     $('#featuresGeneratorSection').toggle(!v2);
                     $('#hyperoptConfigSection').toggle(!v2);
                 }
+                function syncFoundation() {
+                    var on = $('#foundationCheckbox').is(':checked');
+                    $('#foundationEnabled').val(on ? 'True' : 'False');
+                    $('#foundationOptions').toggle(on);
+                }
                 $('input[name="backend"]').change(syncBackend);
+                $('#foundationCheckbox').change(syncFoundation);
                 syncBackend();
+                syncFoundation();
             });
         </script>
         {% endif %}

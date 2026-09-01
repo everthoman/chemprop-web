@@ -1281,7 +1281,7 @@ def train():
             'epochs', 'ensembleSize', 'patience', 'minDelta', 'seed',
             'conformalEnabled', 'conformalAlpha', 'checkpointName', 'gpu',
             'binarizeEnabled', 'binarizeMethod', 'binarizeParam',
-            'backend', 'foundation')
+            'backend', 'foundation', 'foundationEnabled')
     }
 
     # Get arguments
@@ -1326,8 +1326,10 @@ def train():
                       f'found on this server, so foundation models are unavailable.')
         return render_train(warnings=warnings, errors=errors)
 
+    # Finetuning from a foundation model is an option within the v2 backend, not the
+    # reason for it: chemprop 2 also trains a plain D-MPNN from scratch.
     foundation = request.form.get('foundation', '').strip() or None
-    if backend != 'v2':
+    if backend != 'v2' or request.form.get('foundationEnabled', 'True') == 'False':
         foundation = None
     elif foundation and foundation not in app.config['FOUNDATION_MODELS']:
         errors.append(f'Unknown foundation model "{foundation}".')
