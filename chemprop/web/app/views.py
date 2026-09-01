@@ -508,8 +508,10 @@ def validate_uploaded_v2(info, raw_task_names: str):
     if not task_names:
         if n_tasks == 1:
             return ['prediction']
-        raise ValueError(f'This model predicts {n_tasks} targets. Enter their column '
-                         f'names, separated by commas, when uploading it.')
+        # A foundation model predicts hundreds of descriptors whose names carry no
+        # meaning for this app, and nobody should have to type them in to register
+        # one; they are only ever used as CSV headers.
+        return [f'target_{i + 1}' for i in range(n_tasks)]
 
     if len(task_names) != n_tasks:
         raise ValueError(f'This model predicts {n_tasks} target(s) but {len(task_names)} '
@@ -2881,10 +2883,14 @@ def upload_checkpoint(return_page: str):
             write_ckpt_meta(ckpt_id, backend='v2', foundation=None,
                             task_names=task_names, dataset_type=info['task_type'],
                             features_generator=None, smiles_column='smiles')
+            # A foundation model has hundreds of targets; naming them all would
+            # bury the part of this message that matters.
+            described = (', '.join(task_names) if len(task_names) <= 6
+                         else f'{len(task_names)} targets')
             warnings.append(
-                f'Registered as a chemprop 2 model predicting '
-                f'{", ".join(task_names)}. Conformal prediction and the applicability '
-                f'domain need a training set, so they are unavailable for uploads.')
+                f'Registered as a chemprop 2 model predicting {described}. Conformal '
+                f'prediction and the applicability domain need a training set, so they '
+                f'are unavailable for uploads.')
 
     temp_dir.cleanup()
 
