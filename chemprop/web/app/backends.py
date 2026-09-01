@@ -17,8 +17,11 @@ import csv
 import glob
 import json
 import os
+import selectors
 import signal
 import subprocess
+import threading
+import time
 from typing import Dict, List, Optional, Sequence, Tuple
 
 # Column-name suffixes chemprop 2.x appends to a target column when predicting with
@@ -242,8 +245,146 @@ def run_cli(cmd: Sequence[str], log_path: str, env: Dict[str, str]) -> Subproces
     return Subprocess(popen, log_file)
 
 
+class AttributionWorker:
+    """A long-lived chemprop 2 process that answers attribution requests.
+
+    Importing chemprop 2 costs several seconds, which made a fresh process per
+    hovered molecule the whole cost of drawing a structure. One worker is kept
+    alive instead, restarted if it dies and shut down once idle so it is not
+    holding an ensemble in memory indefinitely.
+    """
+
+    IDLE_TIMEOUT = 900.0  # seconds before an unused worker is shut down
+
+    def __init__(self, python_bin: str, script_path: str, env: Dict[str, str],
+                 stderr_path: Optional[str] = None):
+        self.python_bin = python_bin
+        self.script_path = script_path
+        self.env = env
+        self.stderr_path = stderr_path
+        self._proc = None
+        self._stderr = None
+        self._lock = threading.Lock()
+        self._last_used = time.monotonic()
+
+    # -- lifecycle --------------------------------------------------------
+    def _alive(self) -> bool:
+        return self._proc is not None and self._proc.poll() is None
+
+    def _spawn(self) -> None:
+        self._stderr = (open(self.stderr_path, 'a') if self.stderr_path
+                        else subprocess.DEVNULL)
+        self._proc = subprocess.Popen(
+            [self.python_bin, self.script_path, '--serve'],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self._stderr,
+            env=self.env, cwd=os.path.dirname(self.script_path) or '.',
+            text=True, bufsize=1, start_new_session=True)
+        threading.Thread(target=self._reap_when_idle, daemon=True).start()
+
+    def _reap_when_idle(self) -> None:
+        while True:
+            time.sleep(60)
+            with self._lock:
+                if not self._alive():
+                    return
+                if time.monotonic() - self._last_used > self.IDLE_TIMEOUT:
+                    self._kill()
+                    return
+
+    def _kill(self) -> None:
+        proc, self._proc = self._proc, None
+        if proc is None:
+            return
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        if self._stderr not in (None, subprocess.DEVNULL):
+            self._stderr.close()
+        self._stderr = None
+
+    def warm(self) -> None:
+        """Starts the worker ahead of the first request, in the background."""
+        def _start():
+            with self._lock:
+                if not self._alive():
+                    try:
+                        self._spawn()
+                    except OSError:
+                        self._proc = None
+        threading.Thread(target=_start, daemon=True).start()
+
+    # -- requests ---------------------------------------------------------
+    def request(self, model_paths: Sequence[str], smiles_list: Sequence[str],
+                timeout: float):
+        """One attribution round trip, or None if the worker could not answer."""
+        payload = json.dumps({'model_paths': list(model_paths),
+                              'smiles': list(smiles_list)}) + '\n'
+
+        with self._lock:
+            self._last_used = time.monotonic()
+            if not self._alive():
+                try:
+                    self._spawn()
+                except OSError:
+                    return None
+
+            try:
+                self._proc.stdin.write(payload)
+                self._proc.stdin.flush()
+                line = self._read_line(timeout)
+            except (BrokenPipeError, OSError):
+                line = None
+
+            if not line:
+                # A worker that cannot answer is not trusted again; the caller
+                # falls back to a one-shot run.
+                self._kill()
+                return None
+
+            try:
+                return json.loads(line).get('weights')
+            except ValueError:
+                self._kill()
+                return None
+
+    def _read_line(self, timeout: float) -> Optional[str]:
+        """Reads one response line, giving up rather than blocking forever."""
+        selector = selectors.DefaultSelector()
+        selector.register(self._proc.stdout, selectors.EVENT_READ)
+        try:
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                if selector.select(timeout=min(1.0, deadline - time.monotonic())):
+                    return self._proc.stdout.readline()
+                if not self._alive():
+                    return None
+            return None
+        finally:
+            selector.close()
+
+
+_WORKER = None
+_WORKER_LOCK = threading.Lock()
+
+
+def attribution_worker(python_bin: str, script_path: str, env: Dict[str, str],
+                       stderr_path: Optional[str] = None) -> AttributionWorker:
+    """The process-wide attribution worker, created on first use."""
+    global _WORKER
+    with _WORKER_LOCK:
+        if _WORKER is None:
+            _WORKER = AttributionWorker(python_bin, script_path, env, stderr_path)
+        return _WORKER
+
+
 def atom_weights(python_bin: str, script_path: str, model_paths: Sequence[str],
                  smiles_list: Sequence[str], env: Dict[str, str],
+                 stderr_path: Optional[str] = None,
                  timeout: float = 120.0) -> List[Optional[List[float]]]:
     """Per-atom attribution weights from chemprop 2 models.
 
@@ -253,6 +394,13 @@ def atom_weights(python_bin: str, script_path: str, model_paths: Sequence[str],
     be computed; failures are reported as None rather than raised, because
     attribution is a decoration on a structure that must still be drawn.
     """
+    worker = attribution_worker(python_bin, script_path, env, stderr_path)
+    weights = worker.request(model_paths, smiles_list, timeout)
+    if weights is not None and len(weights) == len(smiles_list):
+        return weights
+
+    # The worker could not answer (it had died, or was too slow); fall back to a
+    # one-shot run so a structure is still coloured.
     request = json.dumps({'model_paths': list(model_paths), 'smiles': list(smiles_list)})
 
     # An explicit working directory keeps the chemprop 1.x checkout this app runs

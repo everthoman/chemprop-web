@@ -424,6 +424,25 @@ def mondrian_category(p, thr):
     return 'none'
 
 
+def v2_attribution_script() -> str:
+    return os.path.join(os.path.dirname(os.path.realpath(__file__)), 'v2_attribution.py')
+
+
+def warm_v2_attribution(ckpt_id) -> None:
+    """Starts the attribution worker while a v2 model's plots are being opened.
+
+    The worker takes a few seconds to import chemprop 2. Starting it when the page
+    that will hover those structures is served means the first hover is as quick
+    as the rest.
+    """
+    if not app.config['CHEMPROP2_AVAILABLE'] or ckpt_backend(ckpt_id) != 'v2':
+        return
+    backends.attribution_worker(
+        app.config['CHEMPROP2_PYTHON'], v2_attribution_script(),
+        backends.subprocess_env(None),
+        os.path.join(app.config['TEMP_FOLDER'], 'v2_attribution.log')).warm()
+
+
 def v2_attribution_svgs(ckpt_id, model_paths, smiles_list, gpu=None):
     """Attribution SVGs for a chemprop 2 checkpoint, as ``(svgs, attributed)``.
 
@@ -432,10 +451,10 @@ def v2_attribution_svgs(ckpt_id, model_paths, smiles_list, gpu=None):
     backends colour a structure the same way. Molecules whose weights could not be
     computed fall back to a plain depiction rather than to nothing.
     """
-    script = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'v2_attribution.py')
     weights = backends.atom_weights(
-        app.config['CHEMPROP2_PYTHON'], script, model_paths, smiles_list,
-        backends.subprocess_env(gpu))
+        app.config['CHEMPROP2_PYTHON'], v2_attribution_script(), model_paths, smiles_list,
+        backends.subprocess_env(gpu),
+        stderr_path=os.path.join(app.config['TEMP_FOLDER'], 'v2_attribution.log'))
 
     svgs, attributed = [], []
     for smiles, w in zip(smiles_list, weights):
@@ -1715,6 +1734,9 @@ def train():
         val_curves=val_curves, conformal=None, viz_pending=True,
         warnings=list(warnings), errors=list(errors))
 
+    if backend == 'v2':
+        warm_v2_attribution(ckpt_id)
+
     viz_pending = dataset_type in ['regression', 'classification']
     if viz_pending:
         threading.Thread(
@@ -2542,6 +2564,7 @@ def checkpoint_results(ckpt_id: int):
         data = json.load(_f)
     preds_path = os.path.join(app.config['CHECKPOINT_FOLDER'], f'{ckpt_id}_train_test_preds.csv')
     data['has_preds_csv'] = os.path.exists(preds_path)
+    warm_v2_attribution(ckpt_id)
     return jsonify(data)
 
 
