@@ -1479,15 +1479,15 @@ def train():
             warnings.append('Additional molecule-level features are not supported by the '
                             'chemprop 2 backend and were ignored.')
             features_generator = 'none'
-        if request.form.get('configFileContent', '').strip():
-            warnings.append('Hyperopt configs are not supported by the chemprop 2 backend '
-                            'and were ignored.')
 
-    # Handle optional hyperopt config (content sent as hidden field via FileReader)
-    config_content = request.form.get('configFileContent', '').strip() if backend == 'v1' else ''
+    # Handle optional hyperopt config (content sent as hidden field via FileReader).
+    # Both backends read their own hyperopt output: chemprop 1.x a JSON file,
+    # chemprop 2 a config file for its own parser.
+    config_content = request.form.get('configFileContent', '').strip()
     config_path = None
     if config_content:
-        config_path = os.path.join(app.config['TEMP_FOLDER'], 'uploaded_config.json')
+        suffix = 'toml' if backend == 'v2' else 'json'
+        config_path = os.path.join(app.config['TEMP_FOLDER'], f'uploaded_config.{suffix}')
         with open(config_path, 'w') as f:
             f.write(config_content)
 
@@ -1501,7 +1501,9 @@ def train():
         '--seed', str(seed),
         '--pytorch_seed', str(seed),
     ]
-    if config_path is not None:
+    # chemprop 1.x reads its config as JSON; a chemprop 2 config is handed to the
+    # v2 command instead, and would fail this parser.
+    if config_path is not None and backend == 'v1':
         train_arg_list += ['--config_path', config_path]
     if gpu is not None:
         if gpu == 'None':
@@ -1627,7 +1629,8 @@ def train():
                 task_names=args.task_names, smiles_column=get_header(data_path)[0],
                 epochs=epochs, ensemble_size=ensemble_size, split_type=split_type,
                 seed=seed, foundation=foundation, patience=patience, min_delta=min_delta,
-                batch_size=batch_size, accelerator=backends.accelerator_for(gpu))
+                batch_size=batch_size, config_path=config_path,
+                accelerator=backends.accelerator_for(gpu))
             train_proc = backends.run_cli(train_cmd, job.log_path,
                                           backends.subprocess_env(gpu))
         else:
@@ -1784,11 +1787,20 @@ def hyperopt_progress_bar(hyperopt_checkpoint_dir: str, num_iters: int, progress
         time.sleep(1)
 
 
+def hyperopt_progress_bar_v2(log_path: str, num_trials: int, progress: mp.Value):
+    """Progress for a chemprop 2 hyperopt run, read from Ray Tune's status table."""
+    while progress.value < 100:
+        progress.value = backends.hpopt_progress(log_path, num_trials)
+        time.sleep(1)
+
+
 def render_hyperopt(**kwargs):
     """Renders the hyperopt page with specified kwargs."""
     data_upload_warnings, data_upload_errors = get_upload_warnings_errors('data')
     kwargs.setdefault('settings', LAST_HYPEROPT_SETTINGS.get(str(current_user_id() or ''), {}))
     return render_template('hyperopt.html',
+                           chemprop2_available=app.config['CHEMPROP2_AVAILABLE'],
+                           foundation_models=app.config['FOUNDATION_MODELS'],
                            datasets=db.get_datasets(current_user_id()),
                            cuda=app.config['CUDA'],
                            gpus=app.config['GPUS'],
@@ -1822,6 +1834,9 @@ def hyperopt_page():
         'numIters': request.form.get('numIters', ''),
         'searchKeywords': request.form.getlist('searchKeywords'),
         'gpu': request.form.get('gpu', ''),
+        'backend': request.form.get('backend', 'v1'),
+        'foundation': request.form.get('foundation', ''),
+        'foundationEnabled': request.form.get('foundationEnabled', 'True'),
     }
 
     # Get form fields
@@ -1832,6 +1847,21 @@ def hyperopt_page():
     gpu = request.form.get('gpu')
     search_keywords = request.form.getlist('searchKeywords') or ['basic']
     id_col = request.form.get('idColumn', '').strip() or None
+
+    backend = request.form.get('backend', 'v1')
+    if backend not in ('v1', 'v2'):
+        backend = 'v1'
+    if backend == 'v2' and not app.config['CHEMPROP2_AVAILABLE']:
+        errors.append(f'The chemprop 2 environment ("{app.config["CHEMPROP2_ENV"]}") was not '
+                      f'found on this server.')
+        return render_hyperopt(warnings=warnings, errors=errors)
+
+    foundation = request.form.get('foundation', '').strip() or None
+    if backend != 'v2' or request.form.get('foundationEnabled', 'True') == 'False':
+        foundation = None
+    elif foundation and foundation not in app.config['FOUNDATION_MODELS']:
+        errors.append(f'Unknown foundation model "{foundation}".')
+        return render_hyperopt(warnings=warnings, errors=errors)
 
     data_path = os.path.join(app.config['DATA_FOLDER'], f'{data_name}.csv')
 
@@ -1897,12 +1927,33 @@ def hyperopt_page():
 
         job = start_job('hyperopt')
 
-        pb_proc = mp.Process(target=hyperopt_progress_bar,
-                             args=(hyper_args.hyperopt_checkpoint_dir, num_iters, job.progress))
+        if backend == 'v2':
+            # chemprop 2 writes its chosen settings as a config file for its own
+            # parser, which the Train page can then feed back via --config-path.
+            config_save_path = os.path.join(app.config['TEMP_FOLDER'], 'hyperopt_config.toml')
+            # Outside the run's TemporaryDirectory: when a search fails, its output
+            # is the only account of why, and it must outlive the request.
+            log_path = os.path.join(app.config['TEMP_FOLDER'], 'hyperopt.log')
+            job.log_path = log_path
+
+            hpopt_cmd = backends.build_hpopt_cmd(
+                app.config['CHEMPROP2_BIN'], data_path=data_path,
+                save_dir=hyperopt_save_dir, task_type=dataset_type,
+                task_names=hyper_args.task_names, smiles_column=get_header(data_path)[0],
+                epochs=epochs, num_trials=num_iters, search_keywords=search_keywords,
+                foundation=foundation, accelerator=backends.accelerator_for(gpu))
+
+            pb_proc = mp.Process(target=hyperopt_progress_bar_v2,
+                                 args=(log_path, num_iters, job.progress))
+            hyper_proc = backends.run_cli(hpopt_cmd, log_path, backends.subprocess_env(gpu))
+        else:
+            pb_proc = mp.Process(target=hyperopt_progress_bar,
+                                 args=(hyper_args.hyperopt_checkpoint_dir, num_iters, job.progress))
+            hyper_proc = _spawn.Process(target=_hyperopt_worker, args=(hyper_args_list,))
+
         pb_proc.start()
         job.progress_bar = pb_proc
 
-        hyper_proc = _spawn.Process(target=_hyperopt_worker, args=(hyper_args_list,))
         hyper_proc.start()
         job.process = hyper_proc
 
@@ -1912,7 +1963,7 @@ def hyperopt_page():
         job.process = None
         cancelled = job.cancelled
 
-        if cancelled or hyper_proc.exitcode != 0:
+        if cancelled or hyper_proc.exitcode not in (0, None):
             if pb_proc.is_alive():
                 pb_proc.terminate()
                 pb_proc.join(timeout=2)
@@ -1926,9 +1977,23 @@ def hyperopt_page():
         pb_proc.join()
         end_job(job)
 
+        if backend == 'v2':
+            # Still inside the run's TemporaryDirectory: chemprop 2 writes its
+            # chosen settings under the save directory, which is about to be
+            # removed, so the copy has to happen before leaving this block.
+            produced = backends.hpopt_best_config(hyperopt_save_dir)
+            if produced is None:
+                errors.append(f'Hyperopt finished without producing a configuration — see '
+                              f'{os.path.join(app.config["TEMP_FOLDER"], "hyperopt.log")}.')
+                return render_hyperopt(warnings=warnings, errors=errors)
+            shutil.copy(produced, config_save_path)
+
     # Load best hyperparams from saved config
-    with open(config_save_path) as f:
-        best_config = json.load(f)
+    if backend == 'v2':
+        best_config = backends.read_config_file(config_save_path)
+    else:
+        with open(config_save_path) as f:
+            best_config = json.load(f)
 
     return render_hyperopt(
         completed=True,
@@ -2425,14 +2490,19 @@ def download_train_test_predictions():
 def download_hyperopt_config():
     """Downloads the best hyperparameter config from the last hyperopt run as a .json file,
     named ``<dataset_name>_hyperopt.json`` after the dataset that was optimized."""
-    download_name = 'hyperopt_config.json'
-    ds_id = LAST_HYPEROPT_SETTINGS.get(str(current_user_id() or ''), {}).get('dataName')
+    settings = LAST_HYPEROPT_SETTINGS.get(str(current_user_id() or ''), {})
+    # chemprop 1.x writes JSON, chemprop 2 a config file for its own parser.
+    ext = 'toml' if settings.get('backend') == 'v2' else 'json'
+    filename = f'hyperopt_config.{ext}'
+
+    download_name = filename
+    ds_id = settings.get('dataName')
     if ds_id:
         row = db.query_db('SELECT dataset_name FROM dataset WHERE id = ?', (ds_id,), one=True)
         if row and row['dataset_name']:
             safe = secure_filename(row['dataset_name']) or 'dataset'
-            download_name = f'{safe}_hyperopt.json'
-    return send_from_directory(app.config['TEMP_FOLDER'], 'hyperopt_config.json', as_attachment=True,
+            download_name = f'{safe}_hyperopt.{ext}'
+    return send_from_directory(app.config['TEMP_FOLDER'], filename, as_attachment=True,
                                download_name=download_name, cache_timeout=-1)
 
 

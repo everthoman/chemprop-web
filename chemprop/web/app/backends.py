@@ -17,6 +17,7 @@ import csv
 import glob
 import json
 import os
+import re
 import selectors
 import signal
 import subprocess
@@ -67,6 +68,7 @@ def build_train_cmd(chemprop_bin: str,
                     patience: Optional[int] = None,
                     min_delta: float = 0.0,
                     batch_size: Optional[int] = None,
+                    config_path: Optional[str] = None,
                     accelerator: str = 'cpu') -> List[str]:
     """Builds a ``chemprop train`` command line.
 
@@ -74,8 +76,13 @@ def build_train_cmd(chemprop_bin: str,
     so an identifier column present in the CSV is excluded the same way the v1
     backend excludes it via ``ignore_columns``.
     """
-    cmd = base_cmd(chemprop_bin) + [
-        'train',
+    # The config comes first so that the explicit arguments below override the
+    # settings a hyperopt run chose, notably the dataset and epoch count.
+    cmd = base_cmd(chemprop_bin) + ['train']
+    if config_path:
+        cmd += ['--config-path', config_path]
+
+    cmd += [
         '--data-path', data_path,
         '--output-dir', output_dir,
         '--task-type', task_type,
@@ -139,6 +146,97 @@ def build_predict_cmd(chemprop_bin: str,
             cmd += ['--conformal-alpha', str(conformal_alpha)]
 
     return cmd
+
+
+def build_hpopt_cmd(chemprop_bin: str,
+                    data_path: str,
+                    save_dir: str,
+                    task_type: str,
+                    task_names: Sequence[str],
+                    smiles_column: str,
+                    epochs: int,
+                    num_trials: int,
+                    search_keywords: Sequence[str],
+                    search_algorithm: str = 'random',
+                    foundation: Optional[str] = None,
+                    batch_size: Optional[int] = None,
+                    accelerator: str = 'cpu') -> List[str]:
+    """Builds a ``chemprop hpopt`` command line."""
+    cmd = base_cmd(chemprop_bin) + [
+        'hpopt',
+        '--data-path', data_path,
+        '--hpopt-save-dir', save_dir,
+        '--task-type', task_type,
+        '--smiles-columns', smiles_column,
+        '--target-columns', *task_names,
+        '--epochs', str(epochs),
+        '--raytune-num-samples', str(num_trials),
+        '--raytune-search-algorithm', search_algorithm,
+        '--search-parameter-keywords', *search_keywords,
+        '--num-workers', '0',
+        '--accelerator', accelerator,
+    ]
+
+    if accelerator == 'gpu':
+        cmd.append('--raytune-use-gpu')
+    if batch_size:
+        cmd += ['--batch-size', str(batch_size)]
+    if foundation:
+        cmd += ['--from-foundation', foundation]
+
+    return cmd
+
+
+def hpopt_progress(log_path: str, num_trials: int) -> float:
+    """Percentage of hyperopt trials finished, read from the run's output.
+
+    Ray Tune prints a status table naming how many trials have terminated, which
+    is the only progress signal written while the search is running: the results
+    CSV is not saved until the end.
+    """
+    if num_trials <= 0 or not os.path.exists(log_path):
+        return 0.0
+
+    done = 0
+    try:
+        with open(log_path, errors='replace') as f:
+            for line in f:
+                if 'Trial status:' in line:
+                    match = re.search(r'(\d+) TERMINATED', line)
+                    if match:
+                        done = int(match.group(1))
+    except OSError:
+        return 0.0
+
+    # Held below 100 so the caller decides when the run is actually finished.
+    return min(done * 100.0 / num_trials, 99.0)
+
+
+def hpopt_best_config(save_dir: str) -> Optional[str]:
+    """Path to the configuration chemprop 2 chose, if the search produced one."""
+    path = os.path.join(save_dir, 'best_config.toml')
+    return path if os.path.exists(path) else None
+
+
+def read_config_file(path: str) -> Dict[str, str]:
+    """Reads a chemprop 2 config file into ``{setting: value}`` for display.
+
+    Despite the .toml name these files are written for chemprop's own argument
+    parser and their values are unquoted, so a TOML parser rejects them. Only the
+    display needs the values; training reads the file itself.
+    """
+    settings = {}
+    try:
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#') or '=' not in line:
+                    continue
+                key, _, value = line.partition('=')
+                settings[key.strip()] = value.strip().strip('[]')
+    except OSError:
+        return {}
+    return settings
 
 
 def subprocess_env(gpu: Optional[str]) -> Dict[str, str]:

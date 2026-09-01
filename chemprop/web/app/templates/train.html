@@ -125,7 +125,7 @@
             </label>
         </div>
         <div id="v2Notice" class="text-muted" style="display:{% if bk == 'v2' %}block{% else %}none{% endif %}; margin-top:4px; font-size:0.9em;">
-            Extra molecule-level features, hyperopt configs and atom attribution are not available for chemprop 2 models.
+            Extra molecule-level features are not available for chemprop 2 models. Upload a config from a chemprop 2 hyperopt run below to reuse its settings.
         </div>
         <script>
             $(function() {
@@ -135,7 +135,6 @@
                     // These are chemprop 1.x-only code paths on the server.
                     $('select[name="featuresGenerator"]').prop('disabled', v2);
                     $('#featuresGeneratorSection').toggle(!v2);
-                    $('#hyperoptConfigSection').toggle(!v2);
                 }
                 function syncFoundation() {
                     var on = $('#foundationCheckbox').is(':checked');
@@ -249,7 +248,7 @@
 
         <div id="hyperoptConfigSection">
         <h5>Hyperopt config <small class="text-muted">(optional)</small></h5>
-        <input type="file" id="configFileInput" accept=".json">
+        <input type="file" id="configFileInput" accept=".json,.toml">
         <input type="hidden" name="configFileContent" id="configFileContent">
         </div>
         <small class="text-muted"> &nbsp; Upload a config JSON from the Hyperopt page to use those hyperparameters</small>
