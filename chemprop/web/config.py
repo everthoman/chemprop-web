@@ -58,3 +58,11 @@ FOUNDATION_MODELS = ['CheMeleon']
 # raising it was measured to buy no wall-clock time (CheMeleon finetuning is
 # GPU-bound at 64 already) while costing validation loss at a fixed epoch budget.
 CHEMPROP2_BATCH_SIZE = 64
+
+# Search-space keywords the Hyperopt page may pass through. They land in a
+# variadic CLI option, so anything not on this list is dropped rather than
+# becoming an argument of its own.
+SEARCH_KEYWORDS = ['basic', 'learning_rate', 'init_lr', 'final_lr', 'all',
+                   'linked_hidden_size', 'hidden_size', 'ffn_hidden_size',
+                   'ffn_num_layers', 'depth', 'dropout', 'batch_size',
+                   'warmup_epochs', 'max_lr', 'aggregation', 'activation']

@@ -2,6 +2,8 @@
 
 from functools import wraps
 import csv
+import hmac
+import secrets
 import io
 import math
 import os
@@ -35,6 +37,7 @@ from chemprop.web.app.atom_attribution import (compute_attributions, plain_svg,
                                                render_attribution_svg)
 from chemprop.web.app.applicability import ApplicabilityDomain, load_training_smiles
 from chemprop.web.app import backends
+from chemprop.web.app import safe_checkpoint
 
 class Job:
     """One user's running training, hyperopt or prediction.
@@ -479,6 +482,21 @@ def resolve_foundation(value):
         raise ValueError(f'The model file for "{row["ckpt_name"]}" is missing.')
 
     return path, f'checkpoint: {row["ckpt_name"]}'
+
+
+def user_temp_path(filename: str) -> str:
+    """A path in the temp folder private to the current user.
+
+    Results used to be written to one shared name, so whoever asked for a download
+    next got whichever run finished last, whosever it was.
+    """
+    return os.path.join(app.config['TEMP_FOLDER'], f'{job_key() or "anon"}_{filename}')
+
+
+def temp_cleanup(temp_dir, errors, warnings, return_page, message):
+    """Abandons an upload: drops the temporary copy and records why."""
+    temp_dir.cleanup()
+    errors.append(message)
 
 
 def v2_checkpoint_info_script() -> str:
@@ -1387,6 +1405,38 @@ def owned_dataset(dataset_id):
                        one=True)
 
 
+def csrf_token() -> str:
+    """The current session's CSRF token, created on first use."""
+    token = session.get('csrf_token')
+    if not token:
+        token = secrets.token_urlsafe(32)
+        session['csrf_token'] = token
+    return token
+
+
+@app.context_processor
+def inject_csrf_token():
+    return {'csrf_token': csrf_token()}
+
+
+@app.before_request
+def check_csrf():
+    """Rejects state-changing requests that do not carry the session's token.
+
+    Without this, a link or image on another page can make a logged-in user's
+    browser perform an action here with their cookie attached.
+    """
+    if request.method not in ('POST', 'PUT', 'PATCH', 'DELETE'):
+        return None
+
+    sent = request.form.get('csrf_token') or request.headers.get('X-CSRFToken', '')
+    expected = session.get('csrf_token', '')
+    if not expected or not hmac.compare_digest(str(sent), str(expected)):
+        return jsonify(error='Your page has expired. Reload it and try again.'), 400
+
+    return None
+
+
 @app.before_request
 def require_login():
     """Redirects unauthenticated requests to the login page.
@@ -1638,7 +1688,7 @@ def train():
     config_path = None
     if config_content:
         suffix = 'toml' if backend == 'v2' else 'json'
-        config_path = os.path.join(app.config['TEMP_FOLDER'], f'uploaded_config.{suffix}')
+        config_path = user_temp_path(f'uploaded_config.{suffix}')
         with open(config_path, 'w') as f:
             f.write(config_content)
 
@@ -2001,7 +2051,11 @@ def hyperopt_page():
     num_iters = int(request.form['numIters'])
     dataset_type = request.form.get('datasetType', 'regression')
     gpu = request.form.get('gpu')
-    search_keywords = request.form.getlist('searchKeywords') or ['basic']
+    # Allowlisted: these are passed to a variadic --search_parameter_keywords, so a
+    # value beginning with "--" would start a new option and, coming last, override
+    # the save paths this app chose.
+    search_keywords = [k for k in request.form.getlist('searchKeywords')
+                       if k in app.config['SEARCH_KEYWORDS']] or ['basic']
     id_col = request.form.get('idColumn', '').strip() or None
 
     backend = request.form.get('backend', 'v1')
@@ -2060,7 +2114,7 @@ def hyperopt_page():
     with TemporaryDirectory() as temp_dir:
         hyperopt_save_dir = os.path.join(temp_dir, 'hyperopt')
         os.makedirs(hyperopt_save_dir, exist_ok=True)
-        config_save_path = os.path.join(app.config['TEMP_FOLDER'], 'hyperopt_config.json')
+        config_save_path = user_temp_path('hyperopt_config.json')
 
         hyper_args_list = [
             '--data_path', data_path,
@@ -2088,7 +2142,7 @@ def hyperopt_page():
         if backend == 'v2':
             # chemprop 2 writes its chosen settings as a config file for its own
             # parser, which the Train page can then feed back via --config-path.
-            config_save_path = os.path.join(app.config['TEMP_FOLDER'], 'hyperopt_config.toml')
+            config_save_path = user_temp_path('hyperopt_config.toml')
             # Outside the run's TemporaryDirectory: when a search fails, its output
             # is the only account of why, and it must outlive the request.
             log_path = os.path.join(app.config['TEMP_FOLDER'], 'hyperopt.log')
@@ -2213,7 +2267,7 @@ def run_v2_prediction(job, smiles, model_paths, task_names, gpu, ensemble_unc,
     temp_folder = app.config['TEMP_FOLDER']
     env = backends.subprocess_env(gpu)
     accelerator = backends.accelerator_for(gpu)
-    log_path = os.path.join(temp_folder, 'v2_predict.log')
+    log_path = user_temp_path('v2_predict.log')
 
     def _run(query_smiles, preds_filename, uncertainty_method=None,
              calibration_method=None):
@@ -2223,8 +2277,8 @@ def run_v2_prediction(job, smiles, model_paths, task_names, gpu, ensemble_unc,
 
         query_path = backends.write_smiles_csv(
             [s for s, ok in zip(query_smiles, mask) if ok],
-            os.path.join(temp_folder, f'v2_query_{preds_filename}'))
-        preds_path = os.path.join(temp_folder, preds_filename)
+            user_temp_path(f'v2_query_{preds_filename}'))
+        preds_path = user_temp_path(preds_filename)
 
         cmd = backends.build_predict_cmd(
             app.config['CHEMPROP2_BIN'],
@@ -2369,7 +2423,7 @@ def predict():
     return_unc = ensemble_unc or use_conformal_reg
     arguments = [
         '--test_path', 'None',  # v1 backend only; the v2 backend builds its own command
-        '--preds_path', os.path.join(app.config['TEMP_FOLDER'], app.config['PREDICTIONS_FILENAME']),
+        '--preds_path', user_temp_path(app.config['PREDICTIONS_FILENAME']),
         '--checkpoint_paths', *model_paths
     ]
     if use_conformal_reg:
@@ -2533,7 +2587,7 @@ def predict():
 
     # Write predictions CSV with rounded values (3 d.p.), plus std dev columns if available
     has_ids = identifiers is not None and any(i is not None for i in identifiers)
-    preds_path = os.path.join(app.config['TEMP_FOLDER'], app.config['PREDICTIONS_FILENAME'])
+    preds_path = user_temp_path(app.config['PREDICTIONS_FILENAME'])
     with open(preds_path, 'w', newline='') as f:
         writer = csv.writer(f)
         std_cols = [f'std_{t}' for t in task_names] if unc_std is not None else []
@@ -2636,8 +2690,9 @@ def get_attribution():
 
 @app.route('/download_predictions')
 def download_predictions():
-    """Downloads predictions as a .csv file."""
-    return send_from_directory(app.config['TEMP_FOLDER'], app.config['PREDICTIONS_FILENAME'], as_attachment=True, cache_timeout=-1)
+    """Downloads the current user's predictions as a .csv file."""
+    return send_file(user_temp_path(app.config['PREDICTIONS_FILENAME']), as_attachment=True,
+                     download_name=app.config['PREDICTIONS_FILENAME'], cache_timeout=-1)
 
 
 @app.route('/download_train_test_predictions')
@@ -2665,8 +2720,8 @@ def download_hyperopt_config():
         if row and row['dataset_name']:
             safe = secure_filename(row['dataset_name']) or 'dataset'
             download_name = f'{safe}_hyperopt.{ext}'
-    return send_from_directory(app.config['TEMP_FOLDER'], filename, as_attachment=True,
-                               download_name=download_name, cache_timeout=-1)
+    return send_file(user_temp_path(filename), as_attachment=True,
+                     download_name=download_name, cache_timeout=-1)
 
 
 @app.route('/data')
@@ -2748,7 +2803,7 @@ def download_data(dataset: int):
                                download_name=download_name, cache_timeout=-1)
 
 
-@app.route('/data/delete/<int:dataset>')
+@app.route('/data/delete/<int:dataset>', methods=['POST'])
 @check_not_demo
 def delete_data(dataset: int):
     """
@@ -2763,7 +2818,7 @@ def delete_data(dataset: int):
     return redirect(url_for('data'))
 
 
-@app.route('/data/delete_all')
+@app.route('/data/delete_all', methods=['POST'])
 @check_not_demo
 def delete_all_data():
     """Deletes all datasets belonging to the current user."""
@@ -2893,16 +2948,27 @@ def upload_checkpoint(return_page: str):
     # Insert checkpoints into database
     if len(ckpt_paths) > 0:
         try:
-            ckpt_args = load_args(ckpt_paths[0])
+            # Restricted load: this file came from a browser, and an ordinary
+            # torch.load would run whatever code it contains.
+            ckpt_args = safe_checkpoint.load_v1_args(ckpt_paths[0])
         except Exception:
-            # A chemprop 2 checkpoint carries no chemprop 1.x arguments; it is
-            # identified and described by the v2 environment instead.
+            # Either a chemprop 2 checkpoint, which carries no chemprop 1.x
+            # arguments, or something that is not a checkpoint at all.
             ckpt_args = None
 
         backend = 'v1' if ckpt_args is not None else 'v2'
         info = task_names = None
 
         if backend == 'v2':
+            if not is_admin():
+                temp_cleanup(temp_dir, errors, warnings, return_page,
+                             'Reading a chemprop 2 checkpoint means running code from '
+                             'it, so uploading one is limited to administrators. Train '
+                             'the model here, or ask an admin to add it.')
+                return redirect(url_for(return_page,
+                                        checkpoint_upload_warnings=json.dumps(warnings),
+                                        checkpoint_upload_errors=json.dumps(errors)))
+
             if not app.config['CHEMPROP2_AVAILABLE']:
                 temp_dir.cleanup()
                 errors.append('This is not a chemprop 1 checkpoint, and no chemprop 2 '
@@ -3001,7 +3067,7 @@ def download_checkpoint(checkpoint: int):
     )
 
 
-@app.route('/checkpoints/delete/<int:checkpoint>')
+@app.route('/checkpoints/delete/<int:checkpoint>', methods=['POST'])
 @check_not_demo
 def delete_checkpoint(checkpoint: int):
     """
@@ -3019,7 +3085,7 @@ def delete_checkpoint(checkpoint: int):
     return redirect(url_for('checkpoints'))
 
 
-@app.route('/checkpoints/delete_all')
+@app.route('/checkpoints/delete_all', methods=['POST'])
 @check_not_demo
 def delete_all_checkpoints():
     """Deletes all checkpoints belonging to the current user."""

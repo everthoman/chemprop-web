@@ -12,6 +12,7 @@
         <div class="alert alert-success" role="alert">{{ message }}</div>
     {% endif %}
     <form method="POST" style="max-width: 320px;">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <div class="form-group">
             <label for="newUserName">Username</label>
             <input type="text" class="form-control" id="newUserName" name="newUserName">

@@ -7,6 +7,7 @@
 
 {% block content %}
     <form enctype="multipart/form-data" method="POST">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <!--Model checkpoint selector-->
         <h5>Model checkpoint</h5>
         <select name="checkpointName" required>

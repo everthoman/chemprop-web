@@ -7,6 +7,7 @@
 
 {% block content %}
     <form id="trainForm" method="POST">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <h5>Data</h5>
         <select name="dataName" required>
             {% for dataset in datasets %}

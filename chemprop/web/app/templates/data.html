@@ -12,10 +12,11 @@
 
     <h3>Datasets
         {% if datasets %}
-        <a href="{{ url_for('delete_all_data') }}"
-           onclick="return confirm('Delete all {{ datasets|length }} dataset(s)? This cannot be undone.')">
-            <button class="btn btn-danger btn-sm" style="margin-left:12px">Delete All</button>
-        </a>
+        <form method="POST" action="{{ url_for('delete_all_data') }}" style="display:inline"
+              data-confirm="Delete all {{ datasets|length }} dataset(s)? This cannot be undone.">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button type="submit" class="btn btn-danger btn-sm" style="margin-left:12px">Delete All</button>
+        </form>
         {% endif %}
     </h3>
     <table class="table table-hover" style="width:auto">
@@ -33,10 +34,11 @@
                     <button class="btn btn-default btn-sm btn-rename">Rename</button>
                     <button class="btn btn-primary btn-sm btn-save" style="display:none">Save</button>
                     <button class="btn btn-default btn-sm btn-cancel-rename" style="display:none">Cancel</button>
-                    <a href="{{ url_for('delete_data', dataset=dataset['id']) }}"
-                       onclick="return confirm('Delete dataset \'{{ dataset['dataset_name'] }}\'? This cannot be undone.')">
-                        <button class="btn btn-danger btn-sm">Delete</button>
-                    </a>
+<form method="POST" action="{{ url_for('delete_data', dataset=dataset['id']) }}" style="display:inline"
+                          data-confirm="Delete dataset {{ dataset['dataset_name'] }}? This cannot be undone.">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                        <button type="submit" class="btn btn-danger btn-sm">Delete</button>
+                    </form>
                 </td>
             </tr>
         {% endfor %}

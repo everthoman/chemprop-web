@@ -16,10 +16,37 @@
             integrity="sha384-Tc5IQib027qvyjSMfHjOMaLkfuWVxZxUPnCJA7l2mCWNIpG9mGCD8wGNIcPD7Txa"
             crossorigin="anonymous"></script>
     <link type="text/css" rel="stylesheet" href="{{ url_for('static', filename='stylesheets/style.css') }}">
+    <meta name="csrf-token" content="{{ csrf_token }}">
     <script>
         $(function () {
           $('[data-toggle="tooltip"]').tooltip()
         });
+
+        // Attach the session's CSRF token to every state-changing request, so
+        // individual call sites cannot forget it.
+        (function () {
+            var token = document.querySelector('meta[name="csrf-token"]').content;
+            $.ajaxSetup({ headers: { 'X-CSRFToken': token } });
+
+            var nativeFetch = window.fetch;
+            window.fetch = function (input, init) {
+                init = init || {};
+                var method = (init.method || 'GET').toUpperCase();
+                if (method !== 'GET' && method !== 'HEAD') {
+                    init.headers = new Headers(init.headers || {});
+                    init.headers.set('X-CSRFToken', token);
+                }
+                return nativeFetch(input, init);
+            };
+
+            // A destructive action asks first; the message is read from the
+            // element rather than built into a script, so a name containing a
+            // quote cannot break out of it.
+            document.addEventListener('submit', function (e) {
+                var message = e.target.getAttribute('data-confirm');
+                if (message && !confirm(message)) { e.preventDefault(); }
+            });
+        })();
     </script>
     <title>Chemprop</title>
 </head>

@@ -9,6 +9,7 @@
     <p>Searches for the best model hyperparameters using Bayesian optimization (TPE), then trains a final model with the best settings.</p>
 
     <form id="hyperoptForm" method="POST">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <h5>Data</h5>
         <select name="dataName" required>
             {% for dataset in datasets %}
