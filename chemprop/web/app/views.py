@@ -8,6 +8,7 @@ import os
 import re
 import sys
 import shutil
+from contextlib import nullcontext
 from tempfile import TemporaryDirectory, NamedTemporaryFile
 import threading
 import time
@@ -32,11 +33,13 @@ from chemprop.train import make_predictions, run_training
 from chemprop.utils import create_logger, load_task_names, load_args
 from chemprop.web.app.atom_attribution import compute_attributions
 from chemprop.web.app.applicability import ApplicabilityDomain, load_training_smiles
+from chemprop.web.app import backends
 
 TRAINING = mp.Value('i', 0)       # shared across gunicorn workers
 TRAINING_MODE = mp.Array('c', 32)  # 'train', 'hyperopt', 'predict', or empty
 PROGRESS = mp.Value('d', 0.0)
 CURRENT_LOG_PATH = ''
+CURRENT_V2_DIR = ''  # output dir of a running chemprop 2.x job, for live progress/curves
 ACTIVE_PROCESS = None
 PROGRESS_BAR_PROCESS = None
 CANCELLED = False
@@ -358,6 +361,53 @@ def mondrian_category(p, thr):
     return 'none'
 
 
+def _v2_valid_mask(smiles):
+    """Which query entries RDKit can parse.
+
+    chemprop 2.x raises on the first unparseable SMILES and produces nothing,
+    whereas the v1 backend returns None for that row and the page labels it
+    "Invalid SMILES String". Invalid entries are therefore filtered out before the
+    CLI sees them, and restored as None afterwards, so one bad paste does not lose
+    the whole prediction.
+    """
+    return [Chem.MolFromSmiles(entry[0] if isinstance(entry, (list, tuple)) else entry) is not None
+            for entry in smiles]
+
+
+def _v2_restore_invalid(values, mask):
+    """Re-expands a list computed over the valid entries back to the full query."""
+    it = iter(values)
+    return [next(it) if ok else None for ok in mask]
+
+
+def _v2_conformal_halfwidths(extras, task_names):
+    """Half-interval widths from a conformal-calibrated chemprop 2.x prediction.
+
+    chemprop 2.x reports a conformal interval as explicit lower/upper bound columns,
+    while the rest of this app works in chemprop 1.x's shape of one half-width per
+    task (the interval being prediction +/- half-width), so convert to that.
+    """
+    # A conformal-calibrated run reports the calibrated half interval in the same
+    # uncertainty column an uncalibrated run uses, which is already the shape needed.
+    halfwidths = backends.column_group(extras, task_names, backends.UNCERTAINTY_SUFFIXES)
+    if halfwidths is not None:
+        return halfwidths
+
+    lower = backends.column_group(extras, task_names, backends.INTERVAL_LOWER_SUFFIXES)
+    upper = backends.column_group(extras, task_names, backends.INTERVAL_UPPER_SUFFIXES)
+    if lower is None or upper is None:
+        return None
+
+    halfwidths = []
+    for lo_row, up_row in zip(lower, upper):
+        if lo_row is None or up_row is None:
+            halfwidths.append(None)
+            continue
+        halfwidths.append([None if (lo is None or up is None) else (up - lo) / 2.0
+                           for lo, up in zip(lo_row, up_row)])
+    return halfwidths
+
+
 def load_calibration_data(cal_path, task_names):
     """Read a saved conformal calibration CSV (``smiles`` + task columns) into a
     list-of-lists SMILES (for make_predictions) and per-task integer labels."""
@@ -392,6 +442,50 @@ def _results_path(ckpt_id) -> str:
     return os.path.join(app.config['CHECKPOINT_FOLDER'], f'{ckpt_id}_results.json')
 
 
+def _meta_path(ckpt_id) -> str:
+    return os.path.join(app.config['CHECKPOINT_FOLDER'], f'{ckpt_id}_meta.json')
+
+
+def write_ckpt_meta(ckpt_id, **meta) -> None:
+    """Records what predicting from a checkpoint needs to know about it.
+
+    chemprop 1.x reads this from the checkpoint itself (``load_args`` /
+    ``load_task_names``), but a chemprop 2.x checkpoint can only be opened by
+    chemprop 2.x, and this process runs 1.x. Writing the same facts to a sidecar
+    at training time keeps the predict path free of any v2 import.
+    """
+    with open(_meta_path(ckpt_id), 'w') as f:
+        json.dump(meta, f)
+
+
+def load_ckpt_meta(ckpt_id) -> Optional[dict]:
+    """The metadata sidecar for a checkpoint, or None if it has none (v1 uploads)."""
+    path = _meta_path(ckpt_id)
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def ckpt_backend(ckpt_id) -> str:
+    """Which chemprop version trained a checkpoint: 'v1' or 'v2'."""
+    row = db.query_db('SELECT backend FROM ckpt WHERE id = ?', (ckpt_id,), one=True)
+    return (row['backend'] if row and row['backend'] else 'v1')
+
+
+def v2_train_dir(ckpt_id) -> str:
+    """Working directory for a chemprop 2.x training run.
+
+    Unlike the v1 backend's TemporaryDirectory, this outlives the request: the
+    saved data splits are read afterwards by the background visualization thread,
+    which removes the directory when it is done.
+    """
+    return os.path.join(app.config['TEMP_FOLDER'], f'v2_train_{ckpt_id}')
+
+
 def _write_results_json(ckpt_id, data: dict) -> None:
     """Persist a checkpoint's results JSON (used by the Checkpoints page and the
     Train page's deferred-results poll). ``viz_status`` is one of pending/done/error."""
@@ -401,7 +495,7 @@ def _write_results_json(ckpt_id, data: dict) -> None:
 
 def _compute_train_visualization(ckpt_id, model_paths, data_path, id_col, ignore_cols,
                                  dataset_type, args, conformal_enabled, conformal_alpha,
-                                 val_curves, result_key):
+                                 val_curves, result_key, backend='v1', v2_dir=None, gpu=None):
     """Heavy post-training work, run in a background thread so the Train request can
     return at once. Predicts the train/test splits to build the scatter/ROC plot data
     and stats, writes the per-checkpoint train/test predictions CSV, computes the
@@ -413,51 +507,117 @@ def _compute_train_visualization(ckpt_id, model_paths, data_path, id_col, ignore
     conformal_info = None
     viz_status = 'done'
     try:
-        # Reload data fresh from CSV — run_training scales targets in-place,
-        # so reusing training data here would give scaled targets vs unscaled preds.
-        fresh_data = get_data(path=data_path, smiles_columns=args.smiles_columns,
-                              ignore_columns=ignore_cols, store_row=bool(id_col))
-        train_split, val_split, test_split = split_data(
-            data=fresh_data,
-            split_type=args.split_type,
-            sizes=args.split_sizes,
-            key_molecule_index=args.split_key_molecule,
-            seed=args.seed,
-            num_folds=args.num_folds,
-            args=args,
-        )
+        if backend == 'v2':
+            # chemprop 2.x saved the splits it actually trained on. Reading those back
+            # is both cheaper and safer than recreating the split here, since the two
+            # versions do not partition a dataset identically.
+            splits = []
+            for split_name in ('train', 'val', 'test'):
+                split_path = backends.find_split_file(v2_dir, split_name)
+                if split_path is None:
+                    raise backends.BackendError(f'chemprop 2 saved no {split_name} split')
+                splits.append(get_data(path=split_path, smiles_columns=args.smiles_columns,
+                                       ignore_columns=ignore_cols, store_row=bool(id_col)))
+            train_split, val_split, test_split = splits
+        else:
+            # Reload data fresh from CSV — run_training scales targets in-place,
+            # so reusing training data here would give scaled targets vs unscaled preds.
+            fresh_data = get_data(path=data_path, smiles_columns=args.smiles_columns,
+                                  ignore_columns=ignore_cols, store_row=bool(id_col))
+            train_split, val_split, test_split = split_data(
+                data=fresh_data,
+                split_type=args.split_type,
+                sizes=args.split_sizes,
+                key_molecule_index=args.split_key_molecule,
+                seed=args.seed,
+                num_folds=args.num_folds,
+                args=args,
+            )
 
         _use_unc = len(model_paths) > 1
-        pred_arguments = [
-            '--test_path', 'None',
-            '--preds_path', os.path.join(app.config['TEMP_FOLDER'], 'train_plot_preds.csv'),
-            '--checkpoint_paths', *model_paths,
-            # This runs in a background thread; chemprop's default of 8 DataLoader
-            # worker *processes* cannot be spawned reliably from a non-main thread
-            # (BrokenPipe/hangs), so load data inline.
-            '--num_workers', '0',
-        ]
-        if _use_unc:
-            pred_arguments += ['--uncertainty_method', 'ensemble']
-        if not args.cuda:
-            pred_arguments.append('--no_cuda')
-        elif hasattr(args, 'gpu') and args.gpu is not None:
-            pred_arguments += ['--gpu', str(args.gpu)]
-        if args.features_generator is not None:
-            pred_arguments += ['--features_generator', *args.features_generator]
-            if not args.features_scaling:
-                pred_arguments.append('--no_features_scaling')
 
-        pred_args = PredictArgs().parse_args(pred_arguments)
+        if backend == 'v2':
+            preloaded = None
+            _v2_env = backends.subprocess_env(gpu)
+            _v2_accelerator = backends.accelerator_for(gpu)
 
-        # Load the ensemble once and reuse it across the train/test passes, so the
-        # models aren't re-read from disk for every split.
-        from chemprop.train.make_predictions import load_model
-        preloaded = load_model(pred_args, generator=False)
+            def _v2_predict(dataset, uncertainty_method=None,
+                            cal_path=None, calibration_method=None):
+                """Predicts a split with the chemprop 2.x CLI; returns (preds, extras)."""
+                query_path = os.path.join(v2_dir, 'viz_query.csv')
+                preds_path = os.path.join(v2_dir, 'viz_preds.csv')
+                query_smiles = to_smiles_list(dataset)
+                mask = _v2_valid_mask(query_smiles)
+                backends.write_smiles_csv(
+                    [s for s, ok in zip(query_smiles, mask) if ok], query_path)
+                if not any(mask):
+                    return [None] * len(mask), {}
 
-        def _predict(dataset):
-            return make_predictions(args=pred_args, smiles=to_smiles_list(dataset),
-                                    model_objects=preloaded, return_uncertainty=_use_unc)
+                cmd = backends.build_predict_cmd(
+                    app.config['CONDA_EXE'], app.config['CHEMPROP2_ENV'],
+                    test_path=query_path, preds_path=preds_path, model_paths=model_paths,
+                    uncertainty_method=uncertainty_method, cal_path=cal_path,
+                    calibration_method=calibration_method,
+                    conformal_alpha=conformal_alpha if calibration_method else None,
+                    accelerator=_v2_accelerator)
+
+                proc = backends.run_cli(cmd, os.path.join(v2_dir, 'predict.log'), _v2_env)
+                proc.join()
+                if proc.exitcode != 0:
+                    raise backends.BackendError(
+                        f'chemprop 2 prediction failed (exit code {proc.exitcode})')
+
+                preds, extras = backends.read_preds(preds_path, args.task_names)
+                return (_v2_restore_invalid(preds, mask),
+                        {name: _v2_restore_invalid(values, mask)
+                         for name, values in extras.items()})
+
+            def _predict(dataset):
+                preds, extras = _v2_predict(dataset, 'ensemble' if _use_unc else None)
+                if not _use_unc:
+                    return preds
+                return preds, backends.column_group(extras, args.task_names,
+                                                    backends.UNCERTAINTY_SUFFIXES)
+
+            def _predict_plain(dataset):
+                return _v2_predict(dataset)[0]
+
+            pred_args = None
+        else:
+            pred_arguments = [
+                '--test_path', 'None',
+                '--preds_path', os.path.join(app.config['TEMP_FOLDER'], 'train_plot_preds.csv'),
+                '--checkpoint_paths', *model_paths,
+                # This runs in a background thread; chemprop's default of 8 DataLoader
+                # worker *processes* cannot be spawned reliably from a non-main thread
+                # (BrokenPipe/hangs), so load data inline.
+                '--num_workers', '0',
+            ]
+            if _use_unc:
+                pred_arguments += ['--uncertainty_method', 'ensemble']
+            if not args.cuda:
+                pred_arguments.append('--no_cuda')
+            elif hasattr(args, 'gpu') and args.gpu is not None:
+                pred_arguments += ['--gpu', str(args.gpu)]
+            if args.features_generator is not None:
+                pred_arguments += ['--features_generator', *args.features_generator]
+                if not args.features_scaling:
+                    pred_arguments.append('--no_features_scaling')
+
+            pred_args = PredictArgs().parse_args(pred_arguments)
+
+            # Load the ensemble once and reuse it across the train/test passes, so the
+            # models aren't re-read from disk for every split.
+            from chemprop.train.make_predictions import load_model
+            preloaded = load_model(pred_args, generator=False)
+
+            def _predict(dataset):
+                return make_predictions(args=pred_args, smiles=to_smiles_list(dataset),
+                                        model_objects=preloaded, return_uncertainty=_use_unc)
+
+            def _predict_plain(dataset):
+                return make_predictions(args=pred_args, smiles=to_smiles_list(dataset),
+                                        model_objects=preloaded, return_uncertainty=False)
 
         def _tt_var_to_std(row):
             if row is None:
@@ -663,29 +823,40 @@ def _compute_train_visualization(ckpt_id, model_paths, data_path, id_col, ignore
                         cwriter.writerow([s, *['' if v is None else v for v in t]])
 
                 if dataset_type == 'regression':
-                    conf_arguments = [
-                        '--test_path', 'None',
-                        '--preds_path', os.path.join(app.config['TEMP_FOLDER'], 'train_conformal_preds.csv'),
-                        '--checkpoint_paths', *model_paths,
-                        '--smiles_columns', 'smiles',
-                        '--calibration_path', cal_path,
-                        '--calibration_method', 'conformal_regression',
-                        '--conformal_alpha', str(conformal_alpha),
-                        # See note above: avoid worker-process DataLoader in this thread.
-                        '--num_workers', '0',
-                    ]
-                    if not args.cuda:
-                        conf_arguments.append('--no_cuda')
-                    elif hasattr(args, 'gpu') and args.gpu is not None:
-                        conf_arguments += ['--gpu', str(args.gpu)]
-                    if args.features_generator is not None:
-                        conf_arguments += ['--features_generator', *args.features_generator]
-                        if not args.features_scaling:
-                            conf_arguments.append('--no_features_scaling')
+                    if backend == 'v2':
+                        conf_preds, conf_extras = _v2_predict(
+                            test_split,
+                            uncertainty_method=backends.conformal_uncertainty_method(
+                                len(model_paths)),
+                            cal_path=cal_path, calibration_method='conformal-regression')
+                        conf_unc = _v2_conformal_halfwidths(conf_extras, args.task_names)
+                        if conf_unc is None:
+                            raise backends.BackendError(
+                                'chemprop 2 returned no conformal interval columns')
+                    else:
+                        conf_arguments = [
+                            '--test_path', 'None',
+                            '--preds_path', os.path.join(app.config['TEMP_FOLDER'], 'train_conformal_preds.csv'),
+                            '--checkpoint_paths', *model_paths,
+                            '--smiles_columns', 'smiles',
+                            '--calibration_path', cal_path,
+                            '--calibration_method', 'conformal_regression',
+                            '--conformal_alpha', str(conformal_alpha),
+                            # See note above: avoid worker-process DataLoader in this thread.
+                            '--num_workers', '0',
+                        ]
+                        if not args.cuda:
+                            conf_arguments.append('--no_cuda')
+                        elif hasattr(args, 'gpu') and args.gpu is not None:
+                            conf_arguments += ['--gpu', str(args.gpu)]
+                        if args.features_generator is not None:
+                            conf_arguments += ['--features_generator', *args.features_generator]
+                            if not args.features_scaling:
+                                conf_arguments.append('--no_features_scaling')
 
-                    conf_args = PredictArgs().parse_args(conf_arguments)
-                    conf_preds, conf_unc = make_predictions(
-                        args=conf_args, smiles=to_smiles_list(test_split), return_uncertainty=True)
+                        conf_args = PredictArgs().parse_args(conf_arguments)
+                        conf_preds, conf_unc = make_predictions(
+                            args=conf_args, smiles=to_smiles_list(test_split), return_uncertainty=True)
                     test_targets_c = test_split.targets()
                     per_task = []
                     for ti, name in enumerate(args.task_names):
@@ -717,8 +888,7 @@ def _compute_train_visualization(ckpt_id, model_paths, data_path, id_col, ignore
                     # per-class threshold on the validation set's plain probabilities, then
                     # measure per-class coverage on the independent test split, reusing the
                     # probabilities already predicted for the ROC.
-                    val_preds = make_predictions(args=pred_args, smiles=to_smiles_list(val_split),
-                                                 model_objects=preloaded, return_uncertainty=False)
+                    val_preds = _predict_plain(val_split)
                     thr = mondrian_conformal_thresholds(val_preds, val_split.targets(), conformal_alpha)
                     test_targets_c = test_split.targets()
                     per_task = []
@@ -770,6 +940,11 @@ def _compute_train_visualization(ckpt_id, model_paths, data_path, id_col, ignore
     except NameError:
         pass
     empty_cache()
+
+    # The v2 run directory is kept alive past the training request only so the saved
+    # splits can be read here; nothing needs it now.
+    if backend == 'v2' and v2_dir:
+        shutil.rmtree(v2_dir, ignore_errors=True)
 
     _write_results_json(ckpt_id, {'dataset_type': dataset_type, 'plot_data': plot_data,
                                   'val_curves': val_curves, 'conformal': conformal_info,
@@ -841,6 +1016,21 @@ def progress_bar(args: TrainArgs, progress: mp.Value):
             with open(log_path, 'r') as f:
                 epochs_done = f.read().count('Epoch ')
             progress.value = min(epochs_done * 100 / total_epochs, 100)
+        time.sleep(0.5)
+
+
+def progress_bar_v2(output_dir: str, total_epochs: int, progress: mp.Value):
+    """Progress for a chemprop 2.x run, read from its Lightning metrics files.
+
+    The v1 progress bar counts ``Epoch`` lines in chemprop's own log; chemprop 2.x
+    logs through Lightning instead, so progress comes from the metrics CSVs.
+
+    :param output_dir: The v2 run's output directory.
+    :param total_epochs: Epochs times ensemble size.
+    :param progress: The current progress.
+    """
+    while progress.value < 100:
+        progress.value = backends.epoch_progress(output_dir, total_epochs)
         time.sleep(0.5)
 
 
@@ -919,7 +1109,9 @@ def format_float_list(array: List[float], precision: int = 4) -> List[str]:
 def receiver():
     """Receiver monitoring the progress of training."""
     val_curves = {}
-    if CURRENT_LOG_PATH and os.path.exists(CURRENT_LOG_PATH):
+    if CURRENT_V2_DIR:
+        val_curves = backends.val_curves(CURRENT_V2_DIR)
+    elif CURRENT_LOG_PATH and os.path.exists(CURRENT_LOG_PATH):
         val_curves = _parse_val_curves(CURRENT_LOG_PATH)
     return jsonify(progress=PROGRESS.value, training=TRAINING.value,
                    mode=bytes(TRAINING_MODE).decode().rstrip('\x00'), val_curves=val_curves)
@@ -928,7 +1120,7 @@ def receiver():
 @app.route('/cancel', methods=['POST'])
 def cancel():
     """Terminates any active training, hyperopt, or prediction subprocess."""
-    global ACTIVE_PROCESS, PROGRESS_BAR_PROCESS, CANCELLED, CURRENT_LOG_PATH
+    global ACTIVE_PROCESS, PROGRESS_BAR_PROCESS, CANCELLED, CURRENT_LOG_PATH, CURRENT_V2_DIR
     for proc in [ACTIVE_PROCESS, PROGRESS_BAR_PROCESS]:
         if proc and proc.is_alive():
             proc.terminate()
@@ -942,6 +1134,7 @@ def cancel():
     TRAINING_MODE[:] = b'\x00' * 32
     PROGRESS.value = 0.0
     CURRENT_LOG_PATH = ''
+    CURRENT_V2_DIR = ''
     return jsonify(success=True)
 
 
@@ -1060,6 +1253,8 @@ def render_train(**kwargs):
                            current_user=current_user_id() or '',
                            cuda=app.config['CUDA'],
                            gpus=app.config['GPUS'],
+                           chemprop2_available=app.config['CHEMPROP2_AVAILABLE'],
+                           foundation_models=app.config['FOUNDATION_MODELS'],
                            data_upload_warnings=data_upload_warnings,
                            data_upload_errors=data_upload_errors,
                            users=db.get_all_users(),
@@ -1070,7 +1265,7 @@ def render_train(**kwargs):
 @check_not_demo
 def train():
     """Renders the train page and performs training if request method is POST."""
-    global PROGRESS, CURRENT_LOG_PATH, ACTIVE_PROCESS, PROGRESS_BAR_PROCESS, CANCELLED
+    global PROGRESS, CURRENT_LOG_PATH, CURRENT_V2_DIR, ACTIVE_PROCESS, PROGRESS_BAR_PROCESS, CANCELLED
 
     warnings, errors = [], []
 
@@ -1085,7 +1280,8 @@ def train():
             'dataName', 'idColumn', 'datasetType', 'splitType', 'featuresGenerator',
             'epochs', 'ensembleSize', 'patience', 'minDelta', 'seed',
             'conformalEnabled', 'conformalAlpha', 'checkpointName', 'gpu',
-            'binarizeEnabled', 'binarizeMethod', 'binarizeParam')
+            'binarizeEnabled', 'binarizeMethod', 'binarizeParam',
+            'backend', 'foundation')
     }
 
     # Get arguments
@@ -1118,6 +1314,25 @@ def train():
         id_col = None
     ignore_cols = [id_col] if id_col else []
     features_generator = request.form.get('featuresGenerator', 'none')
+
+    # Which chemprop trains this model. 'v2' runs the chemprop 2.x CLI in its own
+    # conda environment, which is the only way to finetune a foundation model such
+    # as CheMeleon: those checkpoints cannot be loaded by the 1.x code running here.
+    backend = request.form.get('backend', 'v1')
+    if backend not in ('v1', 'v2'):
+        backend = 'v1'
+    if backend == 'v2' and not app.config['CHEMPROP2_AVAILABLE']:
+        errors.append(f'The chemprop 2 environment ("{app.config["CHEMPROP2_ENV"]}") was not '
+                      f'found on this server, so foundation models are unavailable.')
+        return render_train(warnings=warnings, errors=errors)
+
+    foundation = request.form.get('foundation', '').strip() or None
+    if backend != 'v2':
+        foundation = None
+    elif foundation and foundation not in app.config['FOUNDATION_MODELS']:
+        errors.append(f'Unknown foundation model "{foundation}".')
+        return render_train(warnings=warnings, errors=errors)
+
     use_progress_bar = request.form.get('useProgressBar', 'True') == 'True'
     conformal_enabled, conformal_alpha = parse_conformal_form(request.form)
     # Random seed controls both the train/val/test split and the initial model
@@ -1140,8 +1355,22 @@ def train():
     except ValueError:
         binarize_param = _default_param[binarize_method]
 
+    if backend == 'v2':
+        # Both are chemprop 1.x-only code paths on this server; the form hides them
+        # when the v2 backend is selected, so this only catches a stale submission.
+        if features_generator != 'none':
+            warnings.append('Additional molecule-level features are not supported by the '
+                            'chemprop 2 backend and were ignored.')
+            features_generator = 'none'
+        if request.form.get('configFileContent', '').strip():
+            warnings.append('Hyperopt configs are not supported by the chemprop 2 backend '
+                            'and were ignored.')
+        if patience and min_delta:
+            warnings.append('The early-stopping stability band is not supported by the '
+                            'chemprop 2 backend; only the window was applied.')
+
     # Handle optional hyperopt config (content sent as hidden field via FileReader)
-    config_content = request.form.get('configFileContent', '').strip()
+    config_content = request.form.get('configFileContent', '').strip() if backend == 'v1' else ''
     config_path = None
     if config_content:
         config_path = os.path.join(app.config['TEMP_FOLDER'], 'uploaded_config.json')
@@ -1249,24 +1478,49 @@ def train():
                                         args.dataset_type,
                                         args.epochs,
                                         args.ensemble_size,
-                                        len(targets))
+                                        len(targets),
+                                        backend=backend,
+                                        foundation=foundation)
 
-    with TemporaryDirectory() as temp_dir:
+    # The v1 backend trains into a TemporaryDirectory that is gone by the time this
+    # request returns. A v2 run must outlive it: the background visualization thread
+    # reads the splits chemprop 2 saved there, and removes the directory when done.
+    v2_dir = v2_train_dir(ckpt_id) if backend == 'v2' else None
+    if v2_dir:
+        shutil.rmtree(v2_dir, ignore_errors=True)
+
+    with (nullcontext(v2_dir) if v2_dir else TemporaryDirectory()) as temp_dir:
         args.save_dir = temp_dir
 
         LAST_TRAIN_RESULT.pop(str(current_user), None)
 
         if use_progress_bar:
-            pb_proc = mp.Process(target=progress_bar, args=(args, PROGRESS))
+            if backend == 'v2':
+                pb_proc = mp.Process(target=progress_bar_v2,
+                                     args=(temp_dir, epochs * ensemble_size, PROGRESS))
+            else:
+                pb_proc = mp.Process(target=progress_bar, args=(args, PROGRESS))
             pb_proc.start()
             PROGRESS_BAR_PROCESS = pb_proc
             TRAINING.value = 1
             TRAINING_MODE[:5] = b'train'; TRAINING_MODE[5:] = b'\x00' * 27
 
         CURRENT_LOG_PATH = os.path.join(temp_dir, 'verbose.log')
-        train_proc = _spawn.Process(target=_train_worker,
-                                    args=(train_arg_list, args.task_names, data_path,
-                                          ignore_cols, id_col, temp_dir, patience, min_delta))
+        if backend == 'v2':
+            CURRENT_V2_DIR = temp_dir
+            train_cmd = backends.build_train_cmd(
+                app.config['CONDA_EXE'], app.config['CHEMPROP2_ENV'],
+                data_path=data_path, output_dir=temp_dir, task_type=dataset_type,
+                task_names=args.task_names, smiles_column=get_header(data_path)[0],
+                epochs=epochs, ensemble_size=ensemble_size, split_type=split_type,
+                seed=seed, foundation=foundation, patience=patience,
+                accelerator=backends.accelerator_for(gpu))
+            train_proc = backends.run_cli(train_cmd, CURRENT_LOG_PATH,
+                                          backends.subprocess_env(gpu))
+        else:
+            train_proc = _spawn.Process(target=_train_worker,
+                                        args=(train_arg_list, args.task_names, data_path,
+                                              ignore_cols, id_col, temp_dir, patience, min_delta))
         train_proc.start()
         ACTIVE_PROCESS = train_proc
 
@@ -1293,9 +1547,16 @@ def train():
                 TRAINING_MODE[:] = b'\x00' * 32
                 PROGRESS.value = 0.0
             CURRENT_LOG_PATH = ''
+            CURRENT_V2_DIR = ''
             if was_killed:
+                if v2_dir:
+                    shutil.rmtree(v2_dir, ignore_errors=True)
                 return render_train(warnings=['Training was cancelled.'])
-            errors.append('Training failed — check server logs for details.')
+            # A failed v2 run keeps its directory: the CLI's output is the only
+            # record of why it failed, and nothing else in this process saw it.
+            errors.append(f'Training failed — see {os.path.join(v2_dir, "verbose.log")}.'
+                          if v2_dir else
+                          'Training failed — check server logs for details.')
             return render_train(warnings=warnings, errors=errors)
 
         if use_progress_bar:
@@ -1306,20 +1567,47 @@ def train():
             # doesn't reload the page before LAST_TRAIN_RESULT is populated.
 
         # Parse convergence data before temp_dir is cleaned up
-        val_curves = _parse_val_curves(log_path)
+        if backend == 'v2':
+            val_curves = backends.val_curves(temp_dir)
+        else:
+            val_curves = _parse_val_curves(log_path)
         CURRENT_LOG_PATH = ''
+        CURRENT_V2_DIR = ''
 
         # Check if name overlap
         if checkpoint_name != ckpt_name:
             warnings.append(name_already_exists_message('Checkpoint', checkpoint_name, ckpt_name))
 
         # Move models
-        for root, _, files in os.walk(args.save_dir):
-            for fname in files:
-                if fname.endswith('.pt'):
-                    model_id = db.insert_model(ckpt_id)
-                    save_path = os.path.join(app.config['CHECKPOINT_FOLDER'], f'{model_id}.pt')
-                    shutil.move(os.path.join(args.save_dir, root, fname), save_path)
+        if backend == 'v2':
+            # A v2 run directory also holds Lightning checkpoints and the saved
+            # splits, so take only the trained model of each ensemble member.
+            trained_models = backends.collect_models(temp_dir)
+            if not trained_models:
+                shutil.rmtree(v2_dir, ignore_errors=True)
+                errors.append('Training produced no model files — check server logs for details.')
+                return render_train(warnings=warnings, errors=errors)
+            for model_path in trained_models:
+                model_id = db.insert_model(ckpt_id)
+                shutil.move(model_path,
+                            os.path.join(app.config['CHECKPOINT_FOLDER'], f'{model_id}.pt'))
+        else:
+            for root, _, files in os.walk(args.save_dir):
+                for fname in files:
+                    if fname.endswith('.pt'):
+                        model_id = db.insert_model(ckpt_id)
+                        save_path = os.path.join(app.config['CHECKPOINT_FOLDER'], f'{model_id}.pt')
+                        shutil.move(os.path.join(args.save_dir, root, fname), save_path)
+
+    # Everything the predict page needs to know about this checkpoint. For v2 models
+    # it is the only source: their checkpoints can only be opened by chemprop 2.x.
+    write_ckpt_meta(ckpt_id,
+                    backend=backend,
+                    foundation=foundation,
+                    task_names=list(args.task_names),
+                    dataset_type=dataset_type,
+                    features_generator=None if features_generator == 'none' else features_generator,
+                    smiles_column=get_header(data_path)[0])
 
     # Heavy visualization (predicting the train/test splits, conformal coverage) is
     # deferred to a background thread so this request returns immediately and the page
@@ -1343,7 +1631,8 @@ def train():
         threading.Thread(
             target=_compute_train_visualization,
             args=(ckpt_id, model_paths, data_path, id_col, ignore_cols, dataset_type,
-                  args, conformal_enabled, conformal_alpha, val_curves, result_key),
+                  args, conformal_enabled, conformal_alpha, val_curves, result_key,
+                  backend, v2_dir, gpu),
             daemon=True).start()
     else:
         # No scatter/ROC for other dataset types; mark results done immediately.
@@ -1351,6 +1640,8 @@ def train():
                                       'val_curves': val_curves, 'conformal': None,
                                       'viz_status': 'done'})
         LAST_TRAIN_RESULT[result_key]['viz_pending'] = False
+        if v2_dir:
+            shutil.rmtree(v2_dir, ignore_errors=True)
 
     # Allow the polling JS to detect completion and reload to the results shell.
     if use_progress_bar:
@@ -1580,6 +1871,88 @@ def render_predict(**kwargs):
                            **kwargs)
 
 
+def run_v2_prediction(smiles, model_paths, task_names, gpu, ensemble_unc,
+                      use_conformal_reg, cal_path, conformal_alpha,
+                      calibration_smiles=None):
+    """Predicts with a chemprop 2.x checkpoint by running its CLI.
+
+    Returns ``(result, failed)``, where ``result`` has the same shape the v1
+    backend's ``predict_worker`` puts on its queue, so the response rendering is
+    shared between the two backends. The running subprocess is published as
+    ``ACTIVE_PROCESS`` so /cancel can stop it, exactly like the v1 path.
+    """
+    global ACTIVE_PROCESS
+
+    temp_folder = app.config['TEMP_FOLDER']
+    env = backends.subprocess_env(gpu)
+    accelerator = backends.accelerator_for(gpu)
+    log_path = os.path.join(temp_folder, 'v2_predict.log')
+
+    def _run(query_smiles, preds_filename, uncertainty_method=None,
+             calibration_method=None):
+        mask = _v2_valid_mask(query_smiles)
+        if not any(mask):
+            return [None] * len(mask), {}
+
+        query_path = backends.write_smiles_csv(
+            [s for s, ok in zip(query_smiles, mask) if ok],
+            os.path.join(temp_folder, f'v2_query_{preds_filename}'))
+        preds_path = os.path.join(temp_folder, preds_filename)
+
+        cmd = backends.build_predict_cmd(
+            app.config['CONDA_EXE'], app.config['CHEMPROP2_ENV'],
+            test_path=query_path, preds_path=preds_path, model_paths=model_paths,
+            uncertainty_method=uncertainty_method,
+            cal_path=cal_path if calibration_method else None,
+            calibration_method=calibration_method,
+            conformal_alpha=conformal_alpha if calibration_method else None,
+            accelerator=accelerator)
+
+        proc = backends.run_cli(cmd, log_path, env)
+        ACTIVE_PROCESS = proc
+        while proc.is_alive():
+            proc.join(timeout=0.5)
+        ACTIVE_PROCESS = None
+
+        if proc.exitcode != 0:
+            raise backends.BackendError(
+                f'chemprop 2 prediction failed (exit code {proc.exitcode}); '
+                f'see {log_path}')
+
+        preds, extras = backends.read_preds(preds_path, task_names)
+        return (_v2_restore_invalid(preds, mask),
+                {name: _v2_restore_invalid(values, mask)
+                 for name, values in extras.items()})
+
+    try:
+        if use_conformal_reg:
+            preds, extras = _run(smiles, app.config['PREDICTIONS_FILENAME'],
+                                 uncertainty_method=backends.conformal_uncertainty_method(
+                                     len(model_paths)),
+                                 calibration_method='conformal-regression')
+            unc = _v2_conformal_halfwidths(extras, task_names)
+        elif ensemble_unc:
+            preds, extras = _run(smiles, app.config['PREDICTIONS_FILENAME'],
+                                 uncertainty_method='ensemble')
+            unc = backends.column_group(extras, task_names, backends.UNCERTAINTY_SUFFIXES)
+        else:
+            preds, _ = _run(smiles, app.config['PREDICTIONS_FILENAME'])
+            unc = None
+
+        result = {'success': True, 'preds': preds, 'unc': unc}
+
+        # Mondrian conformal for classification needs plain probabilities on the
+        # calibration set as well; see mondrian_conformal_thresholds.
+        if calibration_smiles:
+            cal_preds, _ = _run(calibration_smiles, 'v2_calibration_preds.csv')
+            result['cal_preds'] = cal_preds
+
+        return result, False
+    except backends.BackendError as e:
+        ACTIVE_PROCESS = None
+        return {'success': False, 'error': str(e)}, True
+
+
 @app.route('/predict', methods=['GET', 'POST'])
 def predict():
     """Renders the predict page and makes predictions if the method is POST."""
@@ -1615,10 +1988,26 @@ def predict():
     models = db.get_models(ckpt_id)
     model_paths = [os.path.join(app.config['CHECKPOINT_FOLDER'], f'{model["id"]}.pt') for model in models]
 
-    task_names = load_task_names(model_paths[0])
-    num_tasks = len(task_names)
     gpu = request.form.get('gpu')
-    train_args = load_args(model_paths[0])
+    backend = ckpt_backend(ckpt_id)
+    meta = load_ckpt_meta(ckpt_id)
+
+    if backend == 'v2':
+        # A chemprop 2.x checkpoint can only be opened by chemprop 2.x, so everything
+        # this page needs about the model comes from the sidecar written at train time.
+        if not meta or not meta.get('task_names'):
+            return render_predict(errors=[
+                'This chemprop 2 checkpoint is missing its metadata file, so it cannot '
+                'be used for prediction. Retrain it to restore the metadata.'])
+        task_names = meta['task_names']
+        model_dataset_type = meta.get('dataset_type')
+        train_args = None
+    else:
+        task_names = load_task_names(model_paths[0])
+        train_args = load_args(model_paths[0])
+        model_dataset_type = train_args.dataset_type
+
+    num_tasks = len(task_names)
 
     # Conformal prediction (optional): needs a calibration set saved at train time
     # and a regression/classification model. Falls back to standard output if either
@@ -1628,7 +2017,7 @@ def predict():
     pred_warnings = []
     use_conformal = False
     if conformal_enabled:
-        if train_args.dataset_type not in ('regression', 'classification'):
+        if model_dataset_type not in ('regression', 'classification'):
             pred_warnings.append('Conformal prediction is not available for this model type; showing standard predictions.')
         elif not os.path.exists(cal_path):
             pred_warnings.append('Conformal prediction is unavailable for this checkpoint — no calibration set was saved when it was trained. Showing standard predictions.')
@@ -1638,8 +2027,8 @@ def predict():
     # Regression conformal uses chemprop's conformal_regression directly. Classification
     # conformal uses class-conditional (Mondrian) calibration computed here from plain
     # probabilities, so it just needs predictions on the query and calibration sets.
-    use_conformal_reg = use_conformal and train_args.dataset_type == 'regression'
-    use_conformal_cls = use_conformal and train_args.dataset_type == 'classification'
+    use_conformal_reg = use_conformal and model_dataset_type == 'regression'
+    use_conformal_cls = use_conformal and model_dataset_type == 'classification'
     cal_smiles = cal_labels = None
     if use_conformal_cls:
         cal_smiles, cal_labels = load_calibration_data(cal_path, task_names)
@@ -1650,7 +2039,7 @@ def predict():
     ensemble_unc = len(model_paths) > 1 and not use_conformal
     return_unc = ensemble_unc or use_conformal_reg
     arguments = [
-        '--test_path', 'None',
+        '--test_path', 'None',  # v1 backend only; the v2 backend builds its own command
         '--preds_path', os.path.join(app.config['TEMP_FOLDER'], app.config['PREDICTIONS_FILENAME']),
         '--checkpoint_paths', *model_paths
     ]
@@ -1673,34 +2062,47 @@ def predict():
         else:
             arguments += ['--gpu', gpu]
 
-    # Handle additional features
-    if train_args.features_path is not None:
-        # TODO: make it possible to specify the features generator if trained using features_path
-        arguments += [
-            '--features_generator', 'rdkit_2d_normalized',
-            '--no_features_scaling'
-        ]
-    elif train_args.features_generator is not None:
-        arguments += ['--features_generator', *train_args.features_generator]
+    # Handle additional features (chemprop 1.x checkpoints only; the v2 backend
+    # does not offer molecule-level feature generators through this app)
+    if train_args is not None:
+        if train_args.features_path is not None:
+            # TODO: make it possible to specify the features generator if trained using features_path
+            arguments += [
+                '--features_generator', 'rdkit_2d_normalized',
+                '--no_features_scaling'
+            ]
+        elif train_args.features_generator is not None:
+            arguments += ['--features_generator', *train_args.features_generator]
 
-        if not train_args.features_scaling:
-            arguments.append('--no_features_scaling')
+            if not train_args.features_scaling:
+                arguments.append('--no_features_scaling')
 
     # Parse arguments
     global ACTIVE_PROCESS, CANCELLED
 
-    # Run predictions in a subprocess so they can be cancelled
-    result_queue = _spawn.Queue()
-    pred_proc = _spawn.Process(target=_predict_worker, args=(arguments, smiles, result_queue, return_unc, cal_smiles))
-    pred_proc.start()
-    ACTIVE_PROCESS = pred_proc
     TRAINING.value = 1
     TRAINING_MODE[:7] = b'predict'; TRAINING_MODE[7:] = b'\x00' * 25
 
-    while pred_proc.is_alive():
-        pred_proc.join(timeout=0.5)
+    if backend == 'v2':
+        result, failed = run_v2_prediction(
+            smiles=smiles, model_paths=model_paths, task_names=task_names, gpu=gpu,
+            ensemble_unc=ensemble_unc, use_conformal_reg=use_conformal_reg,
+            cal_path=cal_path, conformal_alpha=conformal_alpha,
+            calibration_smiles=cal_smiles)
+    else:
+        # Run predictions in a subprocess so they can be cancelled
+        result_queue = _spawn.Queue()
+        pred_proc = _spawn.Process(target=_predict_worker, args=(arguments, smiles, result_queue, return_unc, cal_smiles))
+        pred_proc.start()
+        ACTIVE_PROCESS = pred_proc
 
-    ACTIVE_PROCESS = None
+        while pred_proc.is_alive():
+            pred_proc.join(timeout=0.5)
+
+        ACTIVE_PROCESS = None
+        failed = pred_proc.exitcode != 0
+        result = None if failed else result_queue.get_nowait()
+
     TRAINING.value = 0
     TRAINING_MODE[:] = b'\x00' * 32
     cancelled = CANCELLED
@@ -1708,10 +2110,9 @@ def predict():
 
     if cancelled:
         return render_predict(warnings=['Prediction was cancelled.'])
-    if pred_proc.exitcode != 0:
+    if failed and result is None:
         return render_predict(errors=['Prediction failed — check server logs for details.'])
 
-    result = result_queue.get_nowait()
     if not result['success']:
         return render_predict(errors=[result['error']])
     preds = result['preds']
@@ -1782,10 +2183,14 @@ def predict():
     invalid_smiles_warning = 'Invalid SMILES String'
     preds = [pred if pred is not None else [invalid_smiles_warning] * num_tasks for pred in preds]
 
-    # Compute atom attribution SVGs (best-effort; failures yield None)
+    # Compute atom attribution SVGs (best-effort; failures yield None). Attribution
+    # reads chemprop 1.x model internals, so v2 checkpoints get no highlighting.
     flat_smiles = [s[0] for s in smiles[:10]]
-    device = None if (gpu is None or gpu == 'None') else torch.device(f'cuda:{gpu}')
-    attribution_svgs = compute_attributions(model_paths, flat_smiles, device=device)
+    if backend == 'v2':
+        attribution_svgs = [None] * len(flat_smiles)
+    else:
+        device = None if (gpu is None or gpu == 'None') else torch.device(f'cuda:{gpu}')
+        attribution_svgs = compute_attributions(model_paths, flat_smiles, device=device)
 
     # Estimate the applicability domain of each prediction by comparing every
     # query molecule to the model's training set (best-effort; needs the saved
@@ -1872,6 +2277,9 @@ def get_attribution():
 
     if not smiles or not ckpt_id:
         return jsonify({'error': 'Missing smiles or ckpt_id'}), 400
+
+    if ckpt_backend(ckpt_id) == 'v2':
+        return jsonify({'error': 'Atom attribution is not available for chemprop 2 models yet.'}), 400
 
     models = db.get_models(ckpt_id)
     if not models:
@@ -2133,7 +2541,18 @@ def upload_checkpoint(return_page: str):
 
     # Insert checkpoints into database
     if len(ckpt_paths) > 0:
-        ckpt_args = load_args(ckpt_paths[0])
+        try:
+            ckpt_args = load_args(ckpt_paths[0])
+        except Exception:
+            # chemprop 2.x checkpoints (including anything finetuned from a
+            # foundation model) carry no chemprop 1.x arguments, and this process
+            # cannot open them to read the task names a checkpoint entry needs.
+            temp_dir.cleanup()
+            errors.append('This looks like a chemprop 2 checkpoint. Uploading chemprop 2 '
+                          'models is not supported yet — train it here instead.')
+            return redirect(url_for(return_page,
+                                    checkpoint_upload_warnings=json.dumps(warnings),
+                                    checkpoint_upload_errors=json.dumps(errors)))
         ckpt_id, new_ckpt_name = db.insert_ckpt(ckpt_name,
                                                 current_user,
                                                 ckpt_args.dataset_type,
@@ -2194,7 +2613,7 @@ def delete_checkpoint(checkpoint: int):
 
     :param checkpoint: The id of the checkpoint to delete.
     """
-    for suffix in ('_results.json', '_train_test_preds.csv', '_calibration.csv'):
+    for suffix in ('_results.json', '_train_test_preds.csv', '_calibration.csv', '_meta.json'):
         sidecar = os.path.join(app.config['CHECKPOINT_FOLDER'], f'{checkpoint}{suffix}')
         if os.path.exists(sidecar):
             os.remove(sidecar)

@@ -4,6 +4,7 @@ These are accessible in a dictionary, with each line defining a key.
 """
 
 import os
+import shutil
 from datetime import timedelta
 
 import torch
@@ -25,3 +26,20 @@ SECRET_KEY_FILENAME = '.flask_secret_key'  # persisted key used to sign session 
 PERMANENT_SESSION_LIFETIME = timedelta(days=30)
 CUDA = torch.cuda.is_available()
 GPUS = list(range(torch.cuda.device_count()))
+
+# --- chemprop 2.x backend -------------------------------------------------
+# Foundation models (e.g. CheMeleon) are chemprop 2.x artifacts and cannot be
+# loaded by the chemprop 1.x code this app runs on. They are used by shelling
+# out to the chemprop CLI installed in a separate conda environment, so this
+# process never imports chemprop 2.x.
+CHEMPROP2_ENV = os.environ.get('CHEMPROP2_ENV', 'chemprop2')
+CONDA_EXE = os.environ.get('CONDA_EXE') or shutil.which('conda') or \
+    os.path.expanduser('~/Programs/miniconda3/bin/conda')
+
+# The v2 backend is offered on the Train page only when its environment is present.
+CHEMPROP2_AVAILABLE = os.path.isdir(
+    os.path.join(os.path.dirname(os.path.dirname(CONDA_EXE)), 'envs', CHEMPROP2_ENV))
+
+# Foundation models selectable when training with the v2 backend. The names are
+# passed straight to `chemprop train --from-foundation`.
+FOUNDATION_MODELS = ['CheMeleon']

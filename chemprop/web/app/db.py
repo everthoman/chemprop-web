@@ -19,6 +19,30 @@ def init_app(app: Flask):
     app.teardown_appcontext(close_db)
     DB_PATH = app.config['DB_PATH']
 
+    if os.path.isfile(DB_PATH):
+        with app.app_context():
+            ensure_schema()
+
+
+def ensure_schema():
+    """Adds columns introduced after the initial schema to an existing database.
+
+    ``init_db()`` drops and recreates every table, so it cannot be used to pick up
+    new columns without destroying the user's checkpoints. This runs the additive
+    migrations instead, and is safe to call on every startup.
+    """
+    cols = {row['name'] for row in query_db('PRAGMA table_info(ckpt)')}
+    db = get_db()
+
+    # Which chemprop version trained a checkpoint: 'v1' (in-process chemprop 1.x)
+    # or 'v2' (chemprop 2.x run as a subprocess), plus the foundation model used.
+    if 'backend' not in cols:
+        db.execute("ALTER TABLE ckpt ADD COLUMN backend TEXT NOT NULL DEFAULT 'v1'")
+    if 'foundation' not in cols:
+        db.execute('ALTER TABLE ckpt ADD COLUMN foundation TEXT')
+
+    db.commit()
+
 
 def init_db():
     """
@@ -145,7 +169,9 @@ def insert_ckpt(ckpt_name: str,
                 model_class: str,
                 num_epochs: int,
                 ensemble_size: int,
-                training_size: int) -> Tuple[int, str]:
+                training_size: int,
+                backend: str = 'v1',
+                foundation: Optional[str] = None) -> Tuple[int, str]:
     """
     Inserts a new checkpoint. If the desired name is already taken,
     appends integers incrementally until an open name is found.
@@ -156,6 +182,8 @@ def insert_ckpt(ckpt_name: str,
     :param num_epochs: The number of epochs the new checkpoint will run for.
     :param ensemble_size: The number of models included in the ensemble.
     :param training_size: The number of molecules used for training.
+    :param backend: Which chemprop version trained this checkpoint ('v1' or 'v2').
+    :param foundation: Name of the foundation model finetuned from, if any.
     :return A tuple containing the id and name of the new checkpoint.
     """
     db = get_db()
@@ -169,9 +197,11 @@ def insert_ckpt(ckpt_name: str,
             temp_name += str(count)
         try:
             cur = db.execute('INSERT INTO ckpt '
-                             '(ckpt_name, associated_user, class, epochs, ensemble_size, training_size) '
-                             'VALUES (?, ?, ?, ?, ?, ?)',
-                             [temp_name, associated_user, model_class, num_epochs, ensemble_size, training_size])
+                             '(ckpt_name, associated_user, class, epochs, ensemble_size, training_size, '
+                             'backend, foundation) '
+                             'VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+                             [temp_name, associated_user, model_class, num_epochs, ensemble_size, training_size,
+                              backend, foundation])
             new_ckpt_id = cur.lastrowid
         except sqlite3.IntegrityError:
             count += 1
@@ -193,7 +223,9 @@ def delete_ckpt(ckpt_id: int):
     rows = query_db('SELECT * FROM model WHERE associated_ckpt = ?', (ckpt_id,))
 
     for row in rows:
-        os.remove(os.path.join(app.config['CHECKPOINT_FOLDER'], f'{row["id"]}.pt'))
+        model_path = os.path.join(app.config['CHECKPOINT_FOLDER'], f'{row["id"]}.pt')
+        if os.path.exists(model_path):
+            os.remove(model_path)
 
     db = get_db()
     cur = db.cursor()

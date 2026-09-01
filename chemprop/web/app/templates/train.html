@@ -86,6 +86,50 @@
         </script>
         <br>
 
+        <h5>Model</h5>
+        {% set bk = settings.backend or 'v1' %}
+        <div class="btn-group" id="backendSelect" data-toggle="buttons">
+          <label class="btn btn-primary {% if bk == 'v1' %}active{% endif %}">
+            <input type="radio" name="backend" value="v1" autocomplete="off" {% if bk == 'v1' %}checked{% endif %}> D-MPNN (chemprop 1)
+          </label>
+          {% if chemprop2_available %}
+          <label class="btn btn-primary {% if bk == 'v2' %}active{% endif %}">
+            <input type="radio" name="backend" value="v2" autocomplete="off" {% if bk == 'v2' %}checked{% endif %}> Foundation model (chemprop 2)
+          </label>
+          {% endif %}
+        </div>
+        {% if chemprop2_available %}
+        <div id="foundationSection" style="display:{% if bk == 'v2' %}block{% else %}none{% endif %}; margin-top:6px;">
+            <label style="font-weight:normal;">Pretrained on
+                <select name="foundation" id="foundationSelect" style="margin-left:8px;">
+                    {% for fm in foundation_models %}
+                    <option value="{{ fm }}" {% if settings.foundation == fm %}selected{% endif %}>{{ fm }}</option>
+                    {% endfor %}
+                    <option value="" {% if bk == 'v2' and not settings.foundation %}selected{% endif %}>None (train from scratch)</option>
+                </select>
+            </label>
+            <small class="text-muted">&nbsp; finetunes a model pretrained on millions of molecules — usually the better choice on small datasets</small>
+        </div>
+        <div id="v2Notice" class="text-muted" style="display:{% if bk == 'v2' %}block{% else %}none{% endif %}; margin-top:4px; font-size:0.9em;">
+            Extra molecule-level features, hyperopt configs and atom attribution are not available for chemprop 2 models.
+        </div>
+        <script>
+            $(function() {
+                function syncBackend() {
+                    var v2 = $('input[name="backend"]:checked').val() === 'v2';
+                    $('#foundationSection, #v2Notice').toggle(v2);
+                    // These are chemprop 1.x-only code paths on the server.
+                    $('select[name="featuresGenerator"]').prop('disabled', v2);
+                    $('#featuresGeneratorSection').toggle(!v2);
+                    $('#hyperoptConfigSection').toggle(!v2);
+                }
+                $('input[name="backend"]').change(syncBackend);
+                syncBackend();
+            });
+        </script>
+        {% endif %}
+        <br>
+
         <h5>Split type</h5>
         {% set stype = settings.splitType or 'random' %}
         <div class="btn-group" id="splitTypeSelect" data-toggle="buttons">
@@ -98,6 +142,7 @@
         </div>
         <br>
 
+        <div id="featuresGeneratorSection">
         <h5>Additional molecule-level features <small class="text-muted">(optional)</small></h5>
         {% set fg = settings.featuresGenerator or 'none' %}
         <select name="featuresGenerator">
@@ -107,6 +152,7 @@
             <option value="morgan" {% if fg == 'morgan' %}selected{% endif %}>Morgan binary fingerprints (radius 2, 2048 bits)</option>
             <option value="morgan_count" {% if fg == 'morgan_count' %}selected{% endif %}>Morgan count fingerprints (radius 2, 2048 bits)</option>
         </select>
+        </div>
         <br>
 
         <h5>Epochs</h5>
@@ -180,9 +226,11 @@
             });
         </script>
 
+        <div id="hyperoptConfigSection">
         <h5>Hyperopt config <small class="text-muted">(optional)</small></h5>
         <input type="file" id="configFileInput" accept=".json">
         <input type="hidden" name="configFileContent" id="configFileContent">
+        </div>
         <small class="text-muted"> &nbsp; Upload a config JSON from the Hyperopt page to use those hyperparameters</small>
 
         <h5>Checkpoint name</h5>

@@ -20,6 +20,8 @@ CREATE TABLE ckpt (
   ensemble_size INTEGER NOT NULL,
   training_size INTEGER NOT NULL,
   completed BOOLEAN NOT NULL DEFAULT 0,
+  backend TEXT NOT NULL DEFAULT 'v1',
+  foundation TEXT,
   FOREIGN KEY (associated_user) REFERENCES user (id),
   CONSTRAINT uq_ckpt_names UNIQUE(ckpt_name, associated_user)
 );
