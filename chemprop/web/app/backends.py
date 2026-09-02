@@ -218,16 +218,21 @@ def hpopt_progress(log_path: str, num_trials: int) -> float:
     if num_trials <= 0 or not os.path.exists(log_path):
         return 0.0
 
-    done = 0
+    # Only the latest status matters, and Ray's output grows steadily, so read the
+    # end of the file rather than all of it once a second.
     try:
-        with open(log_path, errors='replace') as f:
-            for line in f:
-                if 'Trial status:' in line:
-                    match = re.search(r'(\d+) TERMINATED', line)
-                    if match:
-                        done = int(match.group(1))
+        with open(log_path, 'rb') as f:
+            f.seek(max(0, os.path.getsize(log_path) - 65536))
+            text = f.read().decode('utf-8', errors='replace')
     except OSError:
         return 0.0
+
+    done = 0
+    for line in text.splitlines():
+        if 'Trial status:' in line:
+            match = re.search(r'(\d+) TERMINATED', line)
+            if match:
+                done = int(match.group(1))
 
     # Held below 100 so the caller decides when the run is actually finished.
     return min(done * 100.0 / num_trials, 99.0)
@@ -362,10 +367,15 @@ def run_cli(cmd: Sequence[str], log_path: str, env: Dict[str, str]) -> Subproces
     work_dir = os.path.dirname(log_path) or '.'
     os.makedirs(work_dir, exist_ok=True)
     log_file = open(log_path, 'w')
-    # Run outside the chemprop 1.x checkout for the same reason PYTHONPATH is
-    # dropped: nothing of this app's source should be importable by the v2 CLI.
-    popen = subprocess.Popen(cmd, stdout=log_file, stderr=subprocess.STDOUT,
-                             env=env, cwd=work_dir, start_new_session=True)
+    try:
+        # Run outside the chemprop 1.x checkout for the same reason PYTHONPATH is
+        # dropped: nothing of this app's source should be importable by the v2 CLI.
+        popen = subprocess.Popen(cmd, stdout=log_file, stderr=subprocess.STDOUT,
+                                 env=env, cwd=work_dir, start_new_session=True)
+    except BaseException:
+        log_file.close()
+        raise
+
     return Subprocess(popen, log_file)
 
 
@@ -417,6 +427,7 @@ class AttributionWorker:
         self._stderr = None
         self._lock = threading.Lock()
         self._last_used = time.monotonic()
+        self._reaper_running = False
 
     # -- lifecycle --------------------------------------------------------
     def _alive(self) -> bool:
@@ -430,16 +441,23 @@ class AttributionWorker:
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self._stderr,
             env=self.env, cwd=os.path.dirname(self.script_path) or '.',
             text=True, bufsize=1, start_new_session=True)
-        threading.Thread(target=self._reap_when_idle, daemon=True).start()
+
+        # One reaper for the life of the worker object: a respawn would otherwise
+        # leave the previous one running against the new process.
+        if not self._reaper_running:
+            self._reaper_running = True
+            threading.Thread(target=self._reap_when_idle, daemon=True).start()
 
     def _reap_when_idle(self) -> None:
         while True:
             time.sleep(60)
             with self._lock:
                 if not self._alive():
+                    self._reaper_running = False
                     return
                 if time.monotonic() - self._last_used > self.IDLE_TIMEOUT:
                     self._kill()
+                    self._reaper_running = False
                     return
 
     def _kill(self) -> None:

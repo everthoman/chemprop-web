@@ -29,10 +29,10 @@ from chemprop.web.app import app, auth, db
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__)))))
 
 from chemprop.args import PredictArgs, TrainArgs, HyperoptArgs
-from chemprop.constants import MODEL_FILE_NAME, TRAIN_LOGGER_NAME
+from chemprop.constants import MODEL_FILE_NAME
 from chemprop.data import get_data, get_header, get_smiles, get_task_names, validate_data, split_data, empty_cache
-from chemprop.train import make_predictions, run_training
-from chemprop.utils import create_logger, load_task_names, load_args
+from chemprop.train import make_predictions
+from chemprop.utils import load_task_names, load_args
 from chemprop.web.app.atom_attribution import (compute_attributions, plain_svg,
                                                render_attribution_svg, _cached_load_args)
 from chemprop.web.app.applicability import ApplicabilityDomain, load_training_smiles
@@ -495,7 +495,7 @@ def user_temp_path(filename: str) -> str:
     return os.path.join(app.config['TEMP_FOLDER'], f'{job_key() or "anon"}_{filename}')
 
 
-def temp_cleanup(temp_dir, errors, warnings, return_page, message):
+def temp_cleanup(temp_dir, errors, message):
     """Abandons an upload: drops the temporary copy and records why."""
     temp_dir.cleanup()
     errors.append(message)
@@ -773,7 +773,8 @@ def _compute_train_visualization(ckpt_id, model_paths, data_path, id_col, ignore
 
                 cmd = backends.build_predict_cmd(
                     app.config['CHEMPROP2_BIN'],
-                    molecule_featurizer=v2_featurizer, test_path=query_path, preds_path=preds_path, model_paths=model_paths,
+                    molecule_featurizer=v2_featurizer, test_path=query_path,
+                    preds_path=preds_path, model_paths=model_paths,
                     uncertainty_method=uncertainty_method, cal_path=cal_path,
                     calibration_method=calibration_method,
                     conformal_alpha=conformal_alpha if calibration_method else None,
@@ -2754,14 +2755,6 @@ def download_predictions():
                      download_name=app.config['PREDICTIONS_FILENAME'], cache_timeout=-1)
 
 
-@app.route('/download_train_test_predictions')
-@check_not_demo
-def download_train_test_predictions():
-    """Downloads the combined train/test predictions CSV."""
-    return send_from_directory(app.config['TEMP_FOLDER'], app.config['TRAIN_TEST_PREDS_FILENAME'],
-                               as_attachment=True, download_name='train_test_predictions.csv', cache_timeout=-1)
-
-
 @app.route('/download_hyperopt_config')
 @check_not_demo
 def download_hyperopt_config():
@@ -3024,7 +3017,7 @@ def upload_checkpoint(return_page: str):
 
         if backend == 'v2':
             if not is_admin():
-                temp_cleanup(temp_dir, errors, warnings, return_page,
+                temp_cleanup(temp_dir, errors,
                              'Reading a chemprop 2 checkpoint means running code from '
                              'it, so uploading one is limited to administrators. Train '
                              'the model here, or ask an admin to add it.')

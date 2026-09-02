@@ -19,7 +19,6 @@ ADMIN_USERS = [u.strip().lower() for u in os.environ.get('CHEMPROP_ADMIN_USERS',
 
 SMILES_FILENAME = 'smiles.csv'
 PREDICTIONS_FILENAME = 'predictions.csv'
-TRAIN_TEST_PREDS_FILENAME = 'train_test_predictions.csv'
 DB_FILENAME = 'chemprop.sqlite3'
 CREDENTIALS_FILENAME = 'users_auth.json'  # JSON map of username -> password hash (no database)
 SECRET_KEY_FILENAME = '.flask_secret_key'  # persisted key used to sign session cookies
