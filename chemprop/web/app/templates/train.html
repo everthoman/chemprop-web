@@ -142,11 +142,11 @@
                 function syncBackend() {
                     var v2 = $('input[name="backend"]:checked').val() === 'v2';
                     $('#foundationSection, #v2Notice').toggle(v2);
-                    // chemprop 1 stops when the last N scores sit inside the band;
-                    // chemprop 2 stops after N epochs without improvement, and has
+                    // chemprop 1 stops when the last N scores sit inside a band;
+                    // chemprop 2 stops after N epochs without improvement and has
                     // no use for a band.
-                    $('#minDeltaLabel').toggle(!v2);
-                    $('#minDeltaNote').toggle(v2);
+                    $('#minDeltaRow, #esHelpV1').toggle(!v2);
+                    $('#esHelpV2, #esMetricNote').toggle(v2);
                 }
                 function syncFoundation() {
                     var on = $('#foundationCheckbox').is(':checked');
@@ -202,13 +202,18 @@
             <label style="font-weight:normal;">Window (epochs)
                 <input type="number" name="patience" min="1" step="1" value="{{ settings.patience or '5' }}" style="width:80px;" {% if not es_on %}disabled{% endif %}>
             </label>
-            <small class="text-muted">&nbsp; stop once the validation metric stays flat over this many consecutive epochs</small>
-            <br>
-            <small class="text-muted" id="minDeltaNote" style="display:none">&nbsp; stops after the window passes with no improvement</small>
-            <label style="font-weight:normal;" id="minDeltaLabel">Stability band
-                <input type="number" name="minDelta" min="0" step="0.001" value="{{ settings.minDelta or '0.01' }}" style="width:90px;" {% if not es_on %}disabled{% endif %}>
-            </label>
-            <small class="text-muted">&nbsp; "flat" means the validation metric (e.g. RMSE) swings by no more than this across the window; while it swings more, training continues</small>
+            <small class="text-muted" id="esHelpV1">&nbsp; stop once the validation metric stays flat over this many consecutive epochs</small>
+            <small class="text-muted" id="esHelpV2" style="display:none">&nbsp; stop once the validation metric has gone this many consecutive epochs without improving</small>
+            <div id="minDeltaRow">
+                <br>
+                <label style="font-weight:normal;">Stability band
+                    <input type="number" name="minDelta" min="0" step="0.001" value="{{ settings.minDelta or '0.01' }}" style="width:90px;" {% if not es_on %}disabled{% endif %}>
+                </label>
+                <small class="text-muted">&nbsp; "flat" means the validation metric (e.g. RMSE) swings by no more than this across the window; while it swings more, training continues</small>
+            </div>
+            <div id="esMetricNote" class="text-muted" style="display:none; font-size:0.9em; margin-top:4px;">
+                Judged on the metric plotted below — AUC for classification, error for regression — which is also how the kept model is chosen.
+            </div>
         </div>
         <script>
             $(document).ready(function() {

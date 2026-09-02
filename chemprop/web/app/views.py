@@ -1878,6 +1878,7 @@ def train():
                 min_delta=0.0,
                 batch_size=batch_size, config_path=config_path,
                 molecule_featurizer=molecule_featurizer,
+                tracking_metric=backends.tracking_metric_for(dataset_type),
                 accelerator=backends.accelerator_for(gpu))
             train_proc = backends.run_cli(train_cmd, job.log_path,
                                           backends.subprocess_env(gpu))
@@ -2209,6 +2210,7 @@ def hyperopt_page():
                 task_names=hyper_args.task_names, smiles_column=get_header(data_path)[0],
                 epochs=epochs, num_trials=num_iters, search_keywords=search_keywords,
                 foundation=foundation, molecule_featurizer=molecule_featurizer,
+                tracking_metric=backends.tracking_metric_for(dataset_type),
                 accelerator=backends.accelerator_for(gpu))
 
             pb_proc = mp.Process(target=hyperopt_progress_bar_v2,

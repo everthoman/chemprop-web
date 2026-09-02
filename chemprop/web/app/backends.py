@@ -80,6 +80,7 @@ def build_train_cmd(chemprop_bin: str,
                     batch_size: Optional[int] = None,
                     config_path: Optional[str] = None,
                     molecule_featurizer: Optional[str] = None,
+                    tracking_metric: Optional[str] = None,
                     accelerator: str = 'cpu') -> List[str]:
     """Builds a ``chemprop train`` command line.
 
@@ -119,6 +120,9 @@ def build_train_cmd(chemprop_bin: str,
 
     if molecule_featurizer:
         cmd += ['--molecule-featurizers', molecule_featurizer]
+
+    if tracking_metric:
+        cmd += ['--tracking-metric', tracking_metric]
 
     if foundation:
         cmd += ['--from-foundation', foundation]
@@ -179,6 +183,7 @@ def build_hpopt_cmd(chemprop_bin: str,
                     foundation: Optional[str] = None,
                     batch_size: Optional[int] = None,
                     molecule_featurizer: Optional[str] = None,
+                    tracking_metric: Optional[str] = None,
                     accelerator: str = 'cpu') -> List[str]:
     """Builds a ``chemprop hpopt`` command line."""
     cmd = base_cmd(chemprop_bin) + [
@@ -202,6 +207,8 @@ def build_hpopt_cmd(chemprop_bin: str,
         cmd += ['--batch-size', str(batch_size)]
     if molecule_featurizer:
         cmd += ['--molecule-featurizers', molecule_featurizer]
+    if tracking_metric:
+        cmd += ['--tracking-metric', tracking_metric]
     if foundation:
         cmd += ['--from-foundation', foundation]
 
@@ -298,6 +305,20 @@ def subprocess_env(gpu: Optional[str]) -> Dict[str, str]:
     else:
         env['CUDA_VISIBLE_DEVICES'] = str(gpu)
     return env
+
+
+# What early stopping and checkpoint selection should follow. chemprop 2 tracks
+# the training loss by default, but for classification that is cross-entropy,
+# which flattens while ranking is still improving - so a run stops with its AUC
+# still climbing, and the checkpoint kept is the best-loss epoch rather than the
+# best-AUC one. Regression's loss is the error being reported, so it needs no
+# override.
+TRACKING_METRICS = {'classification': 'roc'}
+
+
+def tracking_metric_for(task_type: str) -> Optional[str]:
+    """The validation metric a run should be judged on, or None for the default."""
+    return TRACKING_METRICS.get(task_type)
 
 
 def conformal_uncertainty_method(n_models: int) -> str:
