@@ -326,6 +326,97 @@ def conformal_calibration_path(ckpt_id) -> str:
     return os.path.join(app.config['CHECKPOINT_FOLDER'], f'{ckpt_id}_calibration.csv')
 
 
+SPLIT_COLUMN = 'split'
+
+
+def split_record_path(ckpt_id) -> str:
+    return os.path.join(app.config['CHECKPOINT_FOLDER'], f'{ckpt_id}_split.csv')
+
+
+def save_split_record(ckpt_id, splits) -> None:
+    """Records which split each molecule fell in, so a later run can reuse it.
+
+    The two backends partition a dataset differently even from the same seed, so
+    comparing them means pinning one partition and training both on it.
+    """
+    with open(split_record_path(ckpt_id), 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(['smiles', SPLIT_COLUMN])
+        for name, dataset in zip(('train', 'val', 'test'), splits):
+            for smiles in dataset.smiles():
+                writer.writerow([smiles[0] if isinstance(smiles, (list, tuple)) else smiles,
+                                 name])
+
+
+def load_split_record(ckpt_id):
+    """``{smiles: split}`` from an earlier run, or None if it recorded none."""
+    path = split_record_path(ckpt_id)
+    if not os.path.exists(path):
+        return None
+    with open(path) as f:
+        return {row['smiles']: row[SPLIT_COLUMN] for row in csv.DictReader(f)
+                if row.get('smiles')}
+
+
+def checkpoints_with_splits(user_id):
+    """The user's checkpoints whose split can be reused."""
+    rows = db.query_db('SELECT id, ckpt_name FROM ckpt WHERE associated_user = ? '
+                       'ORDER BY id DESC',
+                       (user_id or app.config['DEFAULT_USER_ID'],))
+    return [row for row in rows if os.path.exists(split_record_path(row['id']))]
+
+
+def apply_split_record(data_path, split_map, backend, warnings):
+    """Writes the dataset out again, partitioned as an earlier run was.
+
+    Returns ``(data_path, splits_column, split_paths)``: chemprop 2 reads the
+    split from a column, chemprop 1 takes separate files, and the visualisation
+    reads the three files whichever backend ran.
+    """
+    with open(data_path) as f:
+        reader = csv.DictReader(f)
+        header = reader.fieldnames or []
+        rows = list(reader)
+
+    smiles_column = header[0]
+    grouped = {'train': [], 'val': [], 'test': []}
+    unknown = 0
+    for row in rows:
+        split = split_map.get(row[smiles_column])
+        if split in grouped:
+            grouped[split].append(row)
+        else:
+            unknown += 1
+
+    if unknown:
+        warnings.append(f'{unknown} molecule(s) were not in the reused split and were '
+                        f'left out of this run.')
+    for name in ('train', 'val'):
+        if not grouped[name]:
+            raise ValueError(f'The reused split leaves the {name} set empty for this dataset.')
+
+    split_paths = {}
+    for name, subset in grouped.items():
+        path = user_temp_path(f'reused_{name}.csv')
+        with open(path, 'w', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=header)
+            writer.writeheader()
+            writer.writerows(subset)
+        split_paths[name] = path
+
+    if backend == 'v2':
+        combined = user_temp_path('reused_all.csv')
+        with open(combined, 'w', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=header + [SPLIT_COLUMN])
+            writer.writeheader()
+            for name, subset in grouped.items():
+                for row in subset:
+                    writer.writerow({**row, SPLIT_COLUMN: name})
+        return combined, SPLIT_COLUMN, split_paths
+
+    return split_paths['train'], None, split_paths
+
+
 def parse_split_sizes(form) -> Tuple[Optional[List[float]], Optional[str]]:
     """Reads the train/validation/test fractions, or returns why they are unusable.
 
@@ -737,7 +828,7 @@ def _write_results_json(ckpt_id, data: dict) -> None:
 def _compute_train_visualization(ckpt_id, model_paths, data_path, id_col, ignore_cols,
                                  dataset_type, args, conformal_enabled, conformal_alpha,
                                  val_curves, result_key, backend='v1', v2_dir=None, gpu=None,
-                                 v2_featurizer=None):
+                                 v2_featurizer=None, split_paths=None):
     """Heavy post-training work, run in a background thread so the Train request can
     return at once. Predicts the train/test splits to build the scatter/ROC plot data
     and stats, writes the per-checkpoint train/test predictions CSV, computes the
@@ -749,7 +840,13 @@ def _compute_train_visualization(ckpt_id, model_paths, data_path, id_col, ignore
     conformal_info = None
     viz_status = 'done'
     try:
-        if backend == 'v2':
+        if split_paths:
+            # The run was given a partition, so read back exactly those files.
+            train_split, val_split, test_split = [
+                get_data(path=split_paths[name], smiles_columns=args.smiles_columns,
+                         ignore_columns=ignore_cols, store_row=bool(id_col))
+                for name in ('train', 'val', 'test')]
+        elif backend == 'v2':
             # chemprop 2.x saved the splits it actually trained on. Reading those back
             # is both cheaper and safer than recreating the split here, since the two
             # versions do not partition a dataset identically.
@@ -1189,6 +1286,11 @@ def _compute_train_visualization(ckpt_id, model_paths, data_path, id_col, ignore
     if backend == 'v2' and v2_dir:
         shutil.rmtree(v2_dir, ignore_errors=True)
 
+    try:
+        save_split_record(ckpt_id, (train_split, val_split, test_split))
+    except Exception as e:
+        warnings.append(f'Could not record this run\'s split: {e}')
+
     if not (val_curves or {}).get('models'):
         warnings.append('No validation curve was recorded for this run, so the '
                         'convergence chart is empty.')
@@ -1365,7 +1467,10 @@ def release_job_after_error(exception):
         return
     try:
         job = current_job()
-        if job is not None and not job.is_running():
+        if job is not None:
+            # Stop first: the progress bar loops until told otherwise, and would
+            # otherwise outlive the request that started it.
+            job.stop()
             end_job(job)
     except Exception:
         pass
@@ -1605,6 +1710,7 @@ def render_train(**kwargs):
                            chemprop2_available=app.config['CHEMPROP2_AVAILABLE'],
                            foundation_models=app.config['FOUNDATION_MODELS'],
                            foundation_checkpoints=foundation_checkpoints(current_user_id()),
+                           split_checkpoints=checkpoints_with_splits(current_user_id()),
                            default_batch_size=app.config['CHEMPROP2_BATCH_SIZE'],
                            data_upload_warnings=data_upload_warnings,
                            data_upload_errors=data_upload_errors,
@@ -1640,7 +1746,7 @@ def train():
             'conformalEnabled', 'conformalAlpha', 'checkpointName', 'gpu',
             'binarizeEnabled', 'binarizeMethod', 'binarizeParam',
             'backend', 'foundation', 'foundationEnabled', 'batchSize',
-            'splitTrain', 'splitVal', 'splitTest', 'stopOn')
+            'splitTrain', 'splitVal', 'splitTest', 'stopOn', 'reuseSplit')
     }
 
     # Get arguments
@@ -1727,6 +1833,20 @@ def train():
 
     # Which quantity early stopping and checkpoint selection follow (v2 only).
     stop_on = request.form.get('stopOn', 'metric')
+
+    # Reusing an earlier run's partition is what makes two runs comparable: the
+    # backends split differently even from the same seed.
+    reuse_from = request.form.get('reuseSplit', '').strip()
+    split_map = None
+    if reuse_from:
+        source = owned_ckpt(reuse_from)
+        if source is None:
+            errors.append('That checkpoint is not available to take a split from.')
+            return render_train(warnings=warnings, errors=errors)
+        split_map = load_split_record(source['id'])
+        if not split_map:
+            errors.append(f'"{source["ckpt_name"]}" has no recorded split to reuse.')
+            return render_train(warnings=warnings, errors=errors)
 
     # Random seed controls both the train/val/test split and the initial model
     # weights, so a run is fully reproducible. Default 666.
@@ -1858,6 +1978,21 @@ def train():
                 'Enable auto-binarize above, or select regression instead.')
             return render_train(warnings=warnings, errors=errors)
 
+    splits_column = None
+    split_paths = None
+    if split_map:
+        try:
+            data_path, splits_column, split_paths = apply_split_record(
+                data_path, split_map, backend, warnings)
+        except ValueError as e:
+            errors.append(str(e))
+            return render_train(warnings=warnings, errors=errors)
+
+        if backend == 'v1':
+            train_arg_list[train_arg_list.index('--data_path') + 1] = data_path
+            train_arg_list += ['--separate_val_path', split_paths['val'],
+                               '--separate_test_path', split_paths['test']]
+
     if dataset_type == 'regression' and unique_targets <= {0, 1}:
         errors.append('Selected regression dataset but all labels are 0 or 1. Select classification instead.')
 
@@ -1895,9 +2030,11 @@ def train():
         if use_progress_bar:
             if backend == 'v2':
                 pb_proc = mp.Process(target=progress_bar_v2,
-                                     args=(temp_dir, epochs, ensemble_size, job.progress))
+                                     args=(temp_dir, epochs, ensemble_size, job.progress),
+                                     daemon=True)
             else:
-                pb_proc = mp.Process(target=progress_bar, args=(args, job.progress))
+                pb_proc = mp.Process(target=progress_bar, args=(args, job.progress),
+                                     daemon=True)
             pb_proc.start()
             job.progress_bar = pb_proc
 
@@ -1908,7 +2045,8 @@ def train():
                 app.config['CHEMPROP2_BIN'], data_path=data_path, output_dir=temp_dir, task_type=dataset_type,
                 task_names=args.task_names, smiles_column=get_header(data_path)[0],
                 epochs=epochs, ensemble_size=ensemble_size, split_type=split_type,
-                seed=seed, split_sizes=split_sizes, foundation=foundation, patience=patience,
+                seed=seed, split_sizes=split_sizes, splits_column=splits_column,
+                foundation=foundation, patience=patience,
                 # Not min_delta: the two backends mean different things by it. Here
                 # it is Lightning's "an improvement must exceed this", applied to
                 # the validation loss, where the band that suits chemprop 1's
@@ -2034,7 +2172,7 @@ def train():
             target=_compute_train_visualization,
             args=(ckpt_id, model_paths, data_path, id_col, ignore_cols, dataset_type,
                   args, conformal_enabled, conformal_alpha, val_curves, result_key,
-                  backend, v2_dir, gpu, molecule_featurizer),
+                  backend, v2_dir, gpu, molecule_featurizer, split_paths),
             daemon=True).start()
     else:
         # No scatter/ROC for other dataset types; mark results done immediately.
@@ -2201,6 +2339,21 @@ def hyperopt_page():
         errors.append('Selected classification dataset but not all labels are 0 or 1. Select regression instead.')
         return render_hyperopt(warnings=warnings, errors=errors)
 
+    splits_column = None
+    split_paths = None
+    if split_map:
+        try:
+            data_path, splits_column, split_paths = apply_split_record(
+                data_path, split_map, backend, warnings)
+        except ValueError as e:
+            errors.append(str(e))
+            return render_train(warnings=warnings, errors=errors)
+
+        if backend == 'v1':
+            train_arg_list[train_arg_list.index('--data_path') + 1] = data_path
+            train_arg_list += ['--separate_val_path', split_paths['val'],
+                               '--separate_test_path', split_paths['test']]
+
     if dataset_type == 'regression' and unique_targets <= {0, 1}:
         errors.append('Selected regression dataset but all labels are 0 or 1. Select classification instead.')
         return render_hyperopt(warnings=warnings, errors=errors)
@@ -2252,11 +2405,12 @@ def hyperopt_page():
                 accelerator=backends.accelerator_for(gpu))
 
             pb_proc = mp.Process(target=hyperopt_progress_bar_v2,
-                                 args=(log_path, num_iters, job.progress))
+                                 args=(log_path, num_iters, job.progress), daemon=True)
             hyper_proc = backends.run_cli(hpopt_cmd, log_path, backends.subprocess_env(gpu))
         else:
             pb_proc = mp.Process(target=hyperopt_progress_bar,
-                                 args=(hyper_args.hyperopt_checkpoint_dir, num_iters, job.progress))
+                                 args=(hyper_args.hyperopt_checkpoint_dir, num_iters,
+                                       job.progress), daemon=True)
             hyper_proc = _spawn.Process(target=_hyperopt_worker, args=(hyper_args_list,))
 
         pb_proc.start()
@@ -3182,7 +3336,8 @@ def delete_checkpoint(checkpoint: int):
     """
     if owned_ckpt(checkpoint) is None:
         return 'Checkpoint not found', 404
-    for suffix in ('_results.json', '_train_test_preds.csv', '_calibration.csv', '_meta.json'):
+    for suffix in ('_results.json', '_train_test_preds.csv', '_calibration.csv',
+                   '_meta.json', '_split.csv'):
         sidecar = os.path.join(app.config['CHECKPOINT_FOLDER'], f'{checkpoint}{suffix}')
         if os.path.exists(sidecar):
             os.remove(sidecar)

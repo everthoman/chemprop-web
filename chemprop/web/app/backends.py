@@ -75,6 +75,7 @@ def build_train_cmd(chemprop_bin: str,
                     split_type: str,
                     seed: int,
                     split_sizes: Optional[Sequence[float]] = None,
+                    splits_column: Optional[str] = None,
                     foundation: Optional[str] = None,
                     patience: Optional[int] = None,
                     min_delta: float = 0.0,
@@ -116,7 +117,10 @@ def build_train_cmd(chemprop_bin: str,
         '--accelerator', accelerator,
     ]
 
-    if split_sizes:
+    if splits_column:
+        # A column naming each row's split; the sizes are then whatever it says.
+        cmd += ['--splits-column', splits_column]
+    elif split_sizes:
         cmd += ['--split-sizes', *[str(part) for part in split_sizes]]
 
     if batch_size:
