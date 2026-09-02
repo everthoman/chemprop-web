@@ -628,6 +628,61 @@ def find_split_file(output_dir: str, split: str) -> Optional[str]:
     return matches[0] if matches else None
 
 
+class TrainingProgress:
+    """Follows a chemprop 2 run across polls, so the bar advances every epoch.
+
+    Members that have finished are counted exactly, from the model file written
+    when each one ends. Within the member training now, the checkpoint Lightning
+    rewrites at the end of every epoch is used as a tick: its modification time
+    changing means one more epoch is done.
+
+    That tick is the only per-epoch signal a run offers. The metrics file is
+    flushed every hundred steps, which on a small dataset is tens of epochs
+    apart, and the trainer's progress display writes nothing useful to a file.
+    Because ticks can only be counted while watching, the exact records are still
+    consulted as a floor, which also covers a bar that started late.
+    """
+
+    def __init__(self, output_dir: str, epochs: int, ensemble_size: int = 1):
+        self.output_dir = output_dir
+        self.epochs = max(1, epochs)
+        self.total = self.epochs * max(1, ensemble_size)
+        self._member = -1
+        self._ticks = 0
+        self._last_seen = None
+
+    def poll(self) -> float:
+        finished = len(collect_models(self.output_dir))
+
+        if finished != self._member:      # a member ended; start counting the next
+            self._member = finished
+            self._ticks = 0
+            self._last_seen = None
+
+        member_dir = os.path.join(self.output_dir, f'model_{finished}')
+        stamp = _last_checkpoint_stamp(member_dir)
+        if stamp is not None and stamp != self._last_seen:
+            # The first one seen already means an epoch finished.
+            self._ticks = self._ticks + 1 if self._last_seen is not None else max(self._ticks, 1)
+            self._last_seen = stamp
+
+        within = max(self._ticks, _epochs_in_progress(member_dir))
+        # A member counts as complete only once its model file appears.
+        within = min(within, self.epochs - 1)
+
+        return min((finished * self.epochs + within) * 100.0 / self.total, 100.0)
+
+
+def _last_checkpoint_stamp(model_dir: str):
+    """Modification time and size of the checkpoint rewritten each epoch."""
+    path = os.path.join(model_dir, 'checkpoints', 'last.ckpt')
+    try:
+        info = os.stat(path)
+    except OSError:
+        return None
+    return (info.st_mtime_ns, info.st_size)
+
+
 def epoch_progress(output_dir: str, epochs: int, ensemble_size: int = 1) -> float:
     """Percentage of training completed for a chemprop 2 run.
 

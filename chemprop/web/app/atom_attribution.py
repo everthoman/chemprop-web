@@ -29,7 +29,12 @@ _MODEL_CACHE = OrderedDict()   # path -> loaded MoleculeModel
 _MODEL_CACHE_MAX = 12
 _ARGS_CACHE = {}               # path -> TrainArgs
 _SVG_CACHE = OrderedDict()     # (path0, smiles) -> svg string
-_SVG_CACHE_MAX = 100          # contour-map SVGs are large (~0.5-1 MB each)
+# Bounded by total size rather than a count: a contour map runs from a few
+# kilobytes for ethanol to over two megabytes for a large molecule, so a hundred
+# entries could be anywhere between a few MB and a couple of hundred. This app
+# shares a host with other services, so cap what the cache can hold.
+_SVG_CACHE_MAX_BYTES = 64 * 1024 * 1024
+_SVG_CACHE_BYTES = 0
 _CACHE_LOCK = threading.Lock()
 
 
@@ -199,10 +204,23 @@ def compute_attributions(model_paths: List[str], smiles_list: List[str],
 
 
 def _store_svg(key, svg: Optional[str]) -> None:
+    """Caches a rendered structure, evicting the oldest to stay within budget."""
+    global _SVG_CACHE_BYTES
     if svg is None:
         return
+
+    size = len(svg)
+    if size > _SVG_CACHE_MAX_BYTES:
+        return  # a single drawing larger than the whole budget is not worth keeping
+
     with _CACHE_LOCK:
+        previous = _SVG_CACHE.pop(key, None)
+        if previous is not None:
+            _SVG_CACHE_BYTES -= len(previous)
+
         _SVG_CACHE[key] = svg
-        _SVG_CACHE.move_to_end(key)
-        while len(_SVG_CACHE) > _SVG_CACHE_MAX:
-            _SVG_CACHE.popitem(last=False)
+        _SVG_CACHE_BYTES += size
+
+        while _SVG_CACHE_BYTES > _SVG_CACHE_MAX_BYTES and _SVG_CACHE:
+            _, evicted = _SVG_CACHE.popitem(last=False)
+            _SVG_CACHE_BYTES -= len(evicted)

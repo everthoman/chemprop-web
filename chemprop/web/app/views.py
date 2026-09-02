@@ -1254,8 +1254,9 @@ def progress_bar_v2(output_dir: str, epochs: int, ensemble_size: int, progress: 
     :param ensemble_size: Number of members.
     :param progress: The current progress.
     """
+    tracker = backends.TrainingProgress(output_dir, epochs, ensemble_size)
     while progress.value < 100:
-        progress.value = backends.epoch_progress(output_dir, epochs, ensemble_size)
+        progress.value = tracker.poll()
         time.sleep(0.5)
 
 
