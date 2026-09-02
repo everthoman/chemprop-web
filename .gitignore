@@ -10,3 +10,7 @@
 chemprop.egg-info
 docs/build
 dist/*
+
+# Runtime working files: logs and per-run directories under the app's temp folder
+chemprop/web/app/temp/
+*.log
