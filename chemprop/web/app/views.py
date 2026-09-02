@@ -34,10 +34,11 @@ from chemprop.data import get_data, get_header, get_smiles, get_task_names, vali
 from chemprop.train import make_predictions, run_training
 from chemprop.utils import create_logger, load_task_names, load_args
 from chemprop.web.app.atom_attribution import (compute_attributions, plain_svg,
-                                               render_attribution_svg)
+                                               render_attribution_svg, _cached_load_args)
 from chemprop.web.app.applicability import ApplicabilityDomain, load_training_smiles
 from chemprop.web.app import backends
 from chemprop.web.app import safe_checkpoint
+
 
 class Job:
     """One user's running training, hyperopt or prediction.
@@ -1441,9 +1442,31 @@ def check_csrf():
     sent = request.form.get('csrf_token') or request.headers.get('X-CSRFToken', '')
     expected = session.get('csrf_token', '')
     if not expected or not hmac.compare_digest(str(sent), str(expected)):
-        return jsonify(error='Your page has expired. Reload it and try again.'), 400
+        message = 'Your page has expired. Reload it and try again.'
+        # Answer a fetch in the form it can read, and a submitted form in plain
+        # text, the same distinction require_login makes.
+        if _wants_json_response():
+            return jsonify(error=message), 400
+        return message, 400
 
     return None
+
+def _wants_json_response() -> bool:
+    """True when the current request is an AJAX/fetch call rather than a
+    top-level page navigation.
+
+    Such callers cannot follow an HTML login redirect usefully — the browser
+    hands them the login page's markup and ``response.json()`` blows up with
+    "Unexpected token '<'". They should get a 401 JSON body instead.
+    """
+    if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+        return True
+    # Fetch/XHR set Sec-Fetch-Dest to "empty"; document navigations use
+    # "document"/"iframe" (or omit the header on older browsers).
+    dest = request.headers.get('Sec-Fetch-Dest')
+    if dest and dest not in ('document', 'iframe'):
+        return True
+    return request.accept_mimetypes.accept_json and not request.accept_mimetypes.accept_html
 
 
 @app.before_request
@@ -1451,13 +1474,17 @@ def require_login():
     """Redirects unauthenticated requests to the login page.
 
     Skipped in DEMO mode, which exposes no per-user accounts, and for the
-    login page and static assets.
+    login page and static assets. AJAX/fetch callers get a 401 JSON response
+    rather than the HTML login page.
     """
     if app.config.get('DEMO'):
         return None
 
     if request.endpoint in PUBLIC_ENDPOINTS or session.get('user_id') is not None:
         return None
+
+    if _wants_json_response():
+        return jsonify(error='Your session has expired. Please reload the page and log in again.'), 401
 
     return redirect(url_for('login'))
 
@@ -2709,7 +2736,7 @@ def get_attribution():
         return jsonify({'svg': svg, 'has_attribution': attributed[0]})
 
     try:
-        train_args = load_args(model_paths[0])
+        train_args = _cached_load_args(model_paths[0])
         has_attribution = train_args.features_generator is None
         svgs = compute_attributions(model_paths, [smiles])
         svg = svgs[0] if svgs else None

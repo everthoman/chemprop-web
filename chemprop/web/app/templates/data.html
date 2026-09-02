@@ -80,8 +80,14 @@
                 if (!newName) return;
                 var body = new FormData();
                 body.append('name', newName);
-                fetch(renameUrl, {method: 'POST', body: body})
-                    .then(function(r) { return r.json(); })
+                fetch(renameUrl, {method: 'POST', body: body, headers: {'X-Requested-With': 'XMLHttpRequest'}})
+                    .then(function(r) {
+                        if (r.status === 401) {
+                            window.location = '/login';
+                            throw new Error('session expired');
+                        }
+                        return r.json();
+                    })
                     .then(function(data) {
                         if (data.success) {
                             nameSpan.textContent = data.name;
@@ -89,6 +95,9 @@
                         } else {
                             errSpan.textContent = data.error;
                         }
+                    })
+                    .catch(function(e) {
+                        errSpan.textContent = (e && e.message) ? e.message : 'Rename failed.';
                     });
             }
 

@@ -493,14 +493,24 @@
             (function() {
                 var ckptId = {{ ckpt_id | tojson }};
                 function poll() {
-                    $.getJSON('/checkpoint/' + ckptId + '/results', function(data) {
+                    $.ajax({
+                        url: '/checkpoint/' + ckptId + '/results',
+                        dataType: 'json',
+                        headers: {'X-Requested-With': 'XMLHttpRequest'}
+                    }).done(function(data) {
                         if (data && data.viz_status && data.viz_status !== 'pending') {
                             // GET-navigate (not reload) so we never re-submit the training POST
                             window.location.href = '/train';
                         } else {
                             setTimeout(poll, 1500);
                         }
-                    }).fail(function() { setTimeout(poll, 2000); });
+                    }).fail(function(xhr) {
+                        if (xhr && xhr.status === 401) {
+                            window.location = '/login';
+                            return;
+                        }
+                        setTimeout(poll, 2000);
+                    });
                 }
                 setTimeout(poll, 1500);
             })();

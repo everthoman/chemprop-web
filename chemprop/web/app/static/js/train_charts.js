@@ -104,8 +104,10 @@ function renderConvergenceChart(canvasId, valCurves) {
 function initCharts(plotData, datasetType, ckptId) {
     var tooltip = _ensureStructTooltip();
     var svgCache = {};
+    var failedKeys = {};
     var hoverTimer = null;
     var lastKey = null;
+    var inFlight = false;
 
     function positionTooltip(clientX, clientY) {
         var w = tooltip.offsetWidth || 440;
@@ -128,13 +130,13 @@ function initCharts(plotData, datasetType, ckptId) {
         positionTooltip(clientX, clientY);
     }
 
-    function showUnavailable(clientX, clientY, actual, pred, split) {
+    function showError(clientX, clientY, actual, pred, split) {
         tooltip.innerHTML =
             '<div style="font:12px monospace;color:#555;margin-bottom:4px">' +
             (split === 'train' ? 'Train' : 'Test') +
             '  |  Exp: ' + actual.toFixed(3) +
             '  |  Pred: ' + pred.toFixed(3) + '</div>' +
-            '<div style="color:#aaa;font-size:12px">Structure unavailable</div>';
+            '<div style="color:#c00;font-size:12px">Structure unavailable</div>';
         tooltip.style.display = 'block';
         positionTooltip(clientX, clientY);
     }
@@ -161,6 +163,40 @@ function initCharts(plotData, datasetType, ckptId) {
         if (hoverTimer) { clearTimeout(hoverTimer); hoverTimer = null; }
     }
 
+    function fetchStructure(smiles, actual, pred, split, cx, cy) {
+        if (inFlight || svgCache[smiles] || lastKey !== smiles) return;
+        inFlight = true;
+        fetch('/get_attribution?smiles=' + encodeURIComponent(smiles) + '&ckpt_id=' + encodeURIComponent(ckptId),
+              {headers: {'X-Requested-With': 'XMLHttpRequest'}})
+            .then(function(r) {
+                if (r.status === 401) { window.location = '/login'; throw new Error('session expired'); }
+                return r.json();
+            })
+            .then(function(data) {
+                if (data && data.svg) {
+                    svgCache[smiles] = { svg: data.svg, hasAttribution: !!data.has_attribution };
+                    if (lastKey === smiles) showSVG(cx, cy, actual, pred, split, smiles, data.svg, !!data.has_attribution);
+                } else {
+                    failedKeys[smiles] = true;
+                    if (lastKey === smiles) showError(cx, cy, actual, pred, split);
+                }
+            })
+            .catch(function(e) {
+                failedKeys[smiles] = true;
+                console.warn('Attribution fetch failed:', e);
+                if (lastKey === smiles) showError(cx, cy, actual, pred, split);
+            })
+            .then(function() {
+                inFlight = false;
+                // A newer point may have been hovered while this request ran.
+                if (lastKey && lastKey !== smiles && !svgCache[lastKey] && !failedKeys[lastKey] && pendingHover) {
+                    pendingHover();
+                }
+            });
+    }
+
+    var pendingHover = null;
+
     function onPointHover(event, taskData, dsIdx, ptIdx) {
         var split = dsIdx === 0 ? 'train' : 'test';
         var pts = split === 'train' ? taskData.train : taskData.test;
@@ -178,20 +214,16 @@ function initCharts(plotData, datasetType, ckptId) {
             showSVG(cx, cy, actual, pred, split, smiles, svgCache[smiles].svg, svgCache[smiles].hasAttribution);
             return;
         }
+        if (failedKeys[smiles]) {
+            showError(cx, cy, actual, pred, split);
+            return;
+        }
         showLoading(cx, cy, actual, pred, split);
+        pendingHover = function() { fetchStructure(smiles, actual, pred, split, cx, cy); };
         hoverTimer = setTimeout(function() {
-            fetch('/get_attribution?smiles=' + encodeURIComponent(smiles) + '&ckpt_id=' + encodeURIComponent(ckptId))
-                .then(function(r) { return r.json(); })
-                .then(function(data) {
-                    if (data.svg) {
-                        svgCache[smiles] = { svg: data.svg, hasAttribution: !!data.has_attribution };
-                        if (lastKey === smiles) showSVG(cx, cy, actual, pred, split, smiles, data.svg, !!data.has_attribution);
-                    } else if (lastKey === smiles) {
-                        showUnavailable(cx, cy, actual, pred, split);
-                    }
-                })
-                .catch(function(e) { console.warn('Attribution fetch failed:', e); });
-        }, 300);
+            hoverTimer = null;
+            if (lastKey === smiles) fetchStructure(smiles, actual, pred, split, cx, cy);
+        }, 250);
     }
 
     plotData.forEach(function(task, i) {
