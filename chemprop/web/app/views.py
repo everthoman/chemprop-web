@@ -302,7 +302,8 @@ def _parse_val_curves(log_path):
     except Exception:
         pass
 
-    return {'metric': metric_name or '', 'models': models}
+    return {'metric': backends.metric_label(metric_name) if metric_name else '',
+            'models': models}
 
 
 from chemprop.web.app.workers import train_worker as _train_worker
@@ -1161,6 +1162,10 @@ def _compute_train_visualization(ckpt_id, model_paths, data_path, id_col, ignore
     # splits can be read here; nothing needs it now.
     if backend == 'v2' and v2_dir:
         shutil.rmtree(v2_dir, ignore_errors=True)
+
+    if not (val_curves or {}).get('models'):
+        warnings.append('No validation curve was recorded for this run, so the '
+                        'convergence chart is empty.')
 
     _write_results_json(ckpt_id, {'dataset_type': dataset_type, 'plot_data': plot_data,
                                   'val_curves': val_curves, 'conformal': conformal_info,
@@ -2074,8 +2079,11 @@ def hyperopt_page():
                       f'found on this server.')
         return render_hyperopt(warnings=warnings, errors=errors)
 
+    # The Hyperopt form does not offer extra molecule features, but read it the
+    # same way as the Train form so adding the field later needs no change here.
+    features_generator = request.form.get('featuresGenerator', 'none')
     molecule_featurizer = (backends.MOLECULE_FEATURIZERS.get(features_generator)
-                           if backend == 'v2' else None)
+                           if backend == 'v2' and features_generator != 'none' else None)
 
     foundation_choice = request.form.get('foundation', '').strip() or None
     if backend != 'v2' or request.form.get('foundationEnabled', 'True') == 'False':
@@ -2744,7 +2752,11 @@ def download_hyperopt_config():
         if row and row['dataset_name']:
             safe = secure_filename(row['dataset_name']) or 'dataset'
             download_name = f'{safe}_hyperopt.{ext}'
-    return send_file(user_temp_path(filename), as_attachment=True,
+    path = user_temp_path(filename)
+    if not os.path.exists(path):
+        return 'No hyperopt configuration available — run a search first.', 404
+
+    return send_file(path, as_attachment=True,
                      download_name=download_name, cache_timeout=-1)
 
 

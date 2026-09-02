@@ -662,6 +662,19 @@ def _epochs_in_progress(model_dir: str) -> int:
     return epochs
 
 
+# How each backend names its validation metric, and what to call it on the chart.
+METRIC_LABELS = {
+    'roc': 'AUC', 'auc': 'AUC', 'prc': 'PRC-AUC', 'prc-auc': 'PRC-AUC',
+    'accuracy': 'Accuracy', 'f1': 'F1', 'mcc': 'MCC', 'bce': 'cross-entropy',
+    'mse': 'MSE', 'rmse': 'RMSE', 'mae': 'MAE', 'r2': 'R²',
+}
+
+
+def metric_label(name: str) -> str:
+    """A readable name for a validation metric, e.g. chemprop 2's "roc" is AUC."""
+    return METRIC_LABELS.get(name.strip().lower(), name)
+
+
 def val_curves(output_dir: str) -> Dict:
     """Per-model validation scores by epoch, in the shape the Train page charts.
 
@@ -706,7 +719,7 @@ def val_curves(output_dir: str) -> Dict:
             models.append(scores)
 
     pretty = (metric_name or '').replace('val_', '').replace('val/', '')
-    return {'metric': pretty, 'models': models}
+    return {'metric': metric_label(pretty) if pretty else '', 'models': models}
 
 
 def _to_float(value) -> Optional[float]:
