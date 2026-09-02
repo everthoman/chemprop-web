@@ -1235,18 +1235,20 @@ def progress_bar(args: TrainArgs, progress: mp.Value):
         time.sleep(0.5)
 
 
-def progress_bar_v2(output_dir: str, total_epochs: int, progress: mp.Value):
-    """Progress for a chemprop 2.x run, read from its Lightning metrics files.
+def progress_bar_v2(output_dir: str, epochs: int, ensemble_size: int, progress: mp.Value):
+    """Progress for a chemprop 2.x run, read from the files it writes as it goes.
 
-    The v1 progress bar counts ``Epoch`` lines in chemprop's own log; chemprop 2.x
-    logs through Lightning instead, so progress comes from the metrics CSVs.
+    The v1 progress bar counts ``Epoch`` lines in chemprop's own log; chemprop 2
+    logs through Lightning, whose output is buffered, so progress is taken from
+    the model and checkpoint files instead.
 
     :param output_dir: The v2 run's output directory.
-    :param total_epochs: Epochs times ensemble size.
+    :param epochs: Epochs per ensemble member.
+    :param ensemble_size: Number of members.
     :param progress: The current progress.
     """
     while progress.value < 100:
-        progress.value = backends.epoch_progress(output_dir, total_epochs)
+        progress.value = backends.epoch_progress(output_dir, epochs, ensemble_size)
         time.sleep(0.5)
 
 
@@ -1820,7 +1822,7 @@ def train():
         if use_progress_bar:
             if backend == 'v2':
                 pb_proc = mp.Process(target=progress_bar_v2,
-                                     args=(temp_dir, epochs * ensemble_size, job.progress))
+                                     args=(temp_dir, epochs, ensemble_size, job.progress))
             else:
                 pb_proc = mp.Process(target=progress_bar, args=(args, job.progress))
             pb_proc.start()

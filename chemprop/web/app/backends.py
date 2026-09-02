@@ -280,6 +280,11 @@ def subprocess_env(gpu: Optional[str]) -> Dict[str, str]:
     # instead of the environment's. Keep the environment self-contained.
     env['PYTHONNOUSERSITE'] = '1'
 
+    # Output goes to a file, where Python would buffer it in 8 KB blocks: the
+    # trainer's progress lines then reach the log minutes late, and the progress
+    # bar reads them, so a running job looks like it has not started.
+    env['PYTHONUNBUFFERED'] = '1'
+
     if gpu is None or gpu == 'None':
         env['CUDA_VISIBLE_DEVICES'] = ''
     else:
@@ -605,27 +610,56 @@ def find_split_file(output_dir: str, split: str) -> Optional[str]:
     return matches[0] if matches else None
 
 
-def epoch_progress(output_dir: str, total_epochs: int) -> float:
-    """Percentage of training completed, from the Lightning logs of a v2 run.
+def epoch_progress(output_dir: str, epochs: int, ensemble_size: int = 1) -> float:
+    """Percentage of training completed for a chemprop 2 run.
 
-    Counts the distinct epochs recorded across every ensemble member's metrics
-    file. Falls back to 0 while the first epoch is still running (nothing is
-    written until an epoch completes).
+    Ensemble members that have finished are counted exactly, from the model files
+    written when each one ends. Progress within the member currently training is
+    taken from whichever of its two records is further along: the Lightning
+    metrics file, and the epoch named in its best checkpoint. Both lag - the
+    metrics file is only flushed every so many rows - but together they keep the
+    bar moving, and neither can run ahead of the truth.
+
+    The trainer's own "Epoch N/M" output is deliberately not used: it also prints
+    that string outside the progress display, so it cannot be told apart from a
+    real reading.
     """
-    if total_epochs <= 0:
+    total = epochs * max(1, ensemble_size)
+    if total <= 0:
         return 0.0
 
-    epochs_done = 0
-    for metrics_csv in glob.glob(os.path.join(output_dir, 'model_*', '**', 'metrics.csv'),
-                                 recursive=True):
+    finished = len(collect_models(output_dir))
+    done = finished * epochs
+
+    # The member being trained now is the first without a model file.
+    current_dir = os.path.join(output_dir, f'model_{finished}')
+    if os.path.isdir(current_dir):
+        done += min(_epochs_in_progress(current_dir), max(0, epochs - 1))
+
+    return min(done * 100.0 / total, 100.0)
+
+
+def _epochs_in_progress(model_dir: str) -> int:
+    """Epochs finished by one ensemble member, as far as its files show."""
+    epochs = 0
+
+    for metrics_csv in glob.glob(os.path.join(model_dir, '**', 'metrics.csv'), recursive=True):
         try:
             with open(metrics_csv) as f:
                 seen = {row.get('epoch') for row in csv.DictReader(f)}
-            epochs_done += len({e for e in seen if e not in (None, '')})
+            epochs = max(epochs, len({e for e in seen if e not in (None, '')}))
         except OSError:
             continue
 
-    return min(epochs_done * 100.0 / total_epochs, 100.0)
+    # The best checkpoint names the epoch it came from, and is rewritten whenever
+    # the model improves, which is often early on when the bar would otherwise sit
+    # at zero.
+    for checkpoint in glob.glob(os.path.join(model_dir, 'checkpoints', 'best-epoch=*.ckpt')):
+        match = re.search(r'best-epoch=(\d+)', os.path.basename(checkpoint))
+        if match:
+            epochs = max(epochs, int(match.group(1)) + 1)
+
+    return epochs
 
 
 def val_curves(output_dir: str) -> Dict:
