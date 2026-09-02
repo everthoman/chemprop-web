@@ -5,6 +5,7 @@ These are accessible in a dictionary, with each line defining a key.
 
 import os
 import shutil
+import subprocess
 from datetime import timedelta
 
 import torch
@@ -24,7 +25,50 @@ CREDENTIALS_FILENAME = 'users_auth.json'  # JSON map of username -> password has
 SECRET_KEY_FILENAME = '.flask_secret_key'  # persisted key used to sign session cookies
 PERMANENT_SESSION_LIFETIME = timedelta(days=30)
 CUDA = torch.cuda.is_available()
-GPUS = list(range(torch.cuda.device_count()))
+
+# Cards too small to train on are left out of the dropdown. This host has a 2 GB
+# display adapter beside its two training cards, and choosing it only produces an
+# out-of-memory failure part way into a run.
+MIN_GPU_MEMORY_GB = float(os.environ.get('CHEMPROP_MIN_GPU_MEMORY_GB', '4'))
+
+
+def _usable_gpus():
+    """The GPUs worth offering, as ``(indices, {index: label})``.
+
+    Asked of nvidia-smi rather than torch: reading device properties would
+    initialise CUDA in this process, which then forks the progress-bar
+    subprocess, and CUDA does not survive a fork.
+    """
+    try:
+        listing = subprocess.run(
+            ['nvidia-smi', '--query-gpu=index,name,memory.total',
+             '--format=csv,noheader,nounits'],
+            capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        listing = None
+
+    if listing is None or listing.returncode != 0:
+        # Without nvidia-smi, offer every card rather than none.
+        return list(range(torch.cuda.device_count())), {}
+
+    indices, labels = [], {}
+    for line in listing.stdout.strip().splitlines():
+        parts = [part.strip() for part in line.split(',')]
+        if len(parts) < 3:
+            continue
+        try:
+            index, memory_gb = int(parts[0]), float(parts[2]) / 1024
+        except ValueError:
+            continue
+        if memory_gb < MIN_GPU_MEMORY_GB:
+            continue
+        indices.append(index)
+        labels[index] = f'{index} — {parts[1]} ({memory_gb:.0f} GB)'
+
+    return indices, labels
+
+
+GPUS, GPU_LABELS = _usable_gpus()
 
 # --- chemprop 2.x backend -------------------------------------------------
 # Foundation models (e.g. CheMeleon) are chemprop 2.x artifacts and cannot be

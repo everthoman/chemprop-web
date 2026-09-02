@@ -269,7 +269,7 @@
             <select name="gpu">
                 <option value="None" {% if settings.gpu == 'None' %}selected{% endif %}>None</option>
                 {% for gpu in gpus %}
-                    <option value="{{gpu}}" {% if settings.gpu == gpu|string or (not settings.gpu and loop.first) %}selected{% endif %}>{{gpu}}</option>
+                    <option value="{{gpu}}" {% if settings.gpu == gpu|string or (not settings.gpu and loop.first) %}selected{% endif %}>{{ gpu_labels.get(gpu, gpu) }}</option>
                 {% endfor %}
             </select>
             <br>
