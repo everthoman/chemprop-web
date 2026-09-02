@@ -74,6 +74,7 @@ def build_train_cmd(chemprop_bin: str,
                     ensemble_size: int,
                     split_type: str,
                     seed: int,
+                    split_sizes: Optional[Sequence[float]] = None,
                     foundation: Optional[str] = None,
                     patience: Optional[int] = None,
                     min_delta: float = 0.0,
@@ -114,6 +115,9 @@ def build_train_cmd(chemprop_bin: str,
         '--save-data-splits',
         '--accelerator', accelerator,
     ]
+
+    if split_sizes:
+        cmd += ['--split-sizes', *[str(part) for part in split_sizes]]
 
     if batch_size:
         cmd += ['--batch-size', str(batch_size)]
@@ -179,6 +183,7 @@ def build_hpopt_cmd(chemprop_bin: str,
                     epochs: int,
                     num_trials: int,
                     search_keywords: Sequence[str],
+                    split_sizes: Optional[Sequence[float]] = None,
                     search_algorithm: str = 'random',
                     foundation: Optional[str] = None,
                     batch_size: Optional[int] = None,
@@ -203,6 +208,8 @@ def build_hpopt_cmd(chemprop_bin: str,
 
     if accelerator == 'gpu':
         cmd.append('--raytune-use-gpu')
+    if split_sizes:
+        cmd += ['--split-sizes', *[str(part) for part in split_sizes]]
     if batch_size:
         cmd += ['--batch-size', str(batch_size)]
     if molecule_featurizer:

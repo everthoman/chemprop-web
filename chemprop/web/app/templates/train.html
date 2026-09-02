@@ -146,7 +146,7 @@
                     // chemprop 2 stops after N epochs without improvement and has
                     // no use for a band.
                     $('#minDeltaRow, #esHelpV1').toggle(!v2);
-                    $('#esHelpV2, #esMetricNote').toggle(v2);
+                    $('#esHelpV2, #stopOnRow').toggle(v2);
                 }
                 function syncFoundation() {
                     var on = $('#foundationCheckbox').is(':checked');
@@ -175,6 +175,16 @@
         <br>
 
         <div id="featuresGeneratorSection">
+        <h5>Split sizes <small class="text-muted">(train / validation / test, must add up to 1)</small></h5>
+        <input type="number" name="splitTrain" min="0" max="1" step="0.05" style="width:80px;"
+               value="{{ settings.splitTrain or '0.8' }}">
+        <input type="number" name="splitVal" min="0" max="1" step="0.05" style="width:80px;"
+               value="{{ settings.splitVal or '0.1' }}">
+        <input type="number" name="splitTest" min="0" max="1" step="0.05" style="width:80px;"
+               value="{{ settings.splitTest or '0.1' }}">
+        <small class="text-muted">&nbsp; a small validation split measures the metric imprecisely, which early stopping then follows; on an imbalanced set its precision is set by the rarer class</small>
+        <br>
+
         <h5>Additional molecule-level features <small class="text-muted">(optional)</small></h5>
         {% set fg = settings.featuresGenerator or 'none' %}
         <select name="featuresGenerator">
@@ -200,7 +210,7 @@
         </div>
         <div id="esOptions" style="display:{% if es_on %}block{% else %}none{% endif %}; margin-left:20px;">
             <label style="font-weight:normal;">Window (epochs)
-                <input type="number" name="patience" min="1" step="1" value="{{ settings.patience or '5' }}" style="width:80px;" {% if not es_on %}disabled{% endif %}>
+                <input type="number" name="patience" min="1" step="1" value="{{ settings.patience or '10' }}" style="width:80px;" {% if not es_on %}disabled{% endif %}>
             </label>
             <small class="text-muted" id="esHelpV1">&nbsp; stop once the validation metric stays flat over this many consecutive epochs</small>
             <small class="text-muted" id="esHelpV2" style="display:none">&nbsp; stop once the validation metric has gone this many consecutive epochs without improving</small>
@@ -211,8 +221,14 @@
                 </label>
                 <small class="text-muted">&nbsp; "flat" means the validation metric (e.g. RMSE) swings by no more than this across the window; while it swings more, training continues</small>
             </div>
-            <div id="esMetricNote" class="text-muted" style="display:none; font-size:0.9em; margin-top:4px;">
-                Judged on the metric plotted below — AUC for classification, error for regression — which is also how the kept model is chosen.
+            <div id="stopOnRow" style="display:none; margin-top:6px;">
+                <label style="font-weight:normal;">Judge on
+                    <select name="stopOn" style="margin-left:8px;">
+                        <option value="metric" {% if settings.stopOn != 'loss' %}selected{% endif %}>the plotted metric (AUC / error)</option>
+                        <option value="loss" {% if settings.stopOn == 'loss' %}selected{% endif %}>validation loss</option>
+                    </select>
+                </label>
+                <small class="text-muted">&nbsp; also chooses which epoch's model is kept. The metric follows what you are watching; the loss is smoother but can flatten while ranking still improves</small>
             </div>
         </div>
         <script>

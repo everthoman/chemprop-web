@@ -326,6 +326,30 @@ def conformal_calibration_path(ckpt_id) -> str:
     return os.path.join(app.config['CHECKPOINT_FOLDER'], f'{ckpt_id}_calibration.csv')
 
 
+def parse_split_sizes(form) -> Tuple[Optional[List[float]], Optional[str]]:
+    """Reads the train/validation/test fractions, or returns why they are unusable.
+
+    Returns ``(None, None)`` when the form leaves them at the default, so the
+    backends keep their own.
+    """
+    raw = [form.get(name, '').strip() for name in ('splitTrain', 'splitVal', 'splitTest')]
+    if not any(raw):
+        return None, None
+
+    try:
+        sizes = [float(value) for value in raw]
+    except ValueError:
+        return None, 'Split sizes must be numbers.'
+
+    if any(size < 0 for size in sizes) or sizes[0] <= 0 or sizes[1] <= 0:
+        return None, 'The training and validation splits must both be above zero.'
+
+    if abs(sum(sizes) - 1.0) > 0.001:
+        return None, f'Split sizes must add up to 1 (they add up to {sum(sizes):g}).'
+
+    return sizes, None
+
+
 def parse_conformal_form(form) -> Tuple[bool, float]:
     """Read the conformal checkbox + alpha from a submitted form.
 
@@ -1615,7 +1639,8 @@ def train():
             'epochs', 'ensembleSize', 'patience', 'minDelta', 'seed',
             'conformalEnabled', 'conformalAlpha', 'checkpointName', 'gpu',
             'binarizeEnabled', 'binarizeMethod', 'binarizeParam',
-            'backend', 'foundation', 'foundationEnabled', 'batchSize')
+            'backend', 'foundation', 'foundationEnabled', 'batchSize',
+            'splitTrain', 'splitVal', 'splitTest', 'stopOn')
     }
 
     # Get arguments
@@ -1692,6 +1717,17 @@ def train():
 
     use_progress_bar = request.form.get('useProgressBar', 'True') == 'True'
     conformal_enabled, conformal_alpha = parse_conformal_form(request.form)
+    # How the dataset is divided. A small validation split cannot measure a metric
+    # precisely - on an imbalanced set its AUC is decided by the minority class -
+    # and early stopping then reacts to noise, so this is worth controlling.
+    split_sizes, split_error = parse_split_sizes(request.form)
+    if split_error:
+        errors.append(split_error)
+        return render_train(warnings=warnings, errors=errors)
+
+    # Which quantity early stopping and checkpoint selection follow (v2 only).
+    stop_on = request.form.get('stopOn', 'metric')
+
     # Random seed controls both the train/val/test split and the initial model
     # weights, so a run is fully reproducible. Default 666.
     seed_raw = request.form.get('seed', '').strip()
@@ -1743,6 +1779,8 @@ def train():
         '--seed', str(seed),
         '--pytorch_seed', str(seed),
     ]
+    if split_sizes:
+        train_arg_list += ['--split_sizes', *[str(part) for part in split_sizes]]
     # chemprop 1.x reads its config as JSON; a chemprop 2 config is handed to the
     # v2 command instead, and would fail this parser.
     if config_path is not None and backend == 'v1':
@@ -1870,7 +1908,7 @@ def train():
                 app.config['CHEMPROP2_BIN'], data_path=data_path, output_dir=temp_dir, task_type=dataset_type,
                 task_names=args.task_names, smiles_column=get_header(data_path)[0],
                 epochs=epochs, ensemble_size=ensemble_size, split_type=split_type,
-                seed=seed, foundation=foundation, patience=patience,
+                seed=seed, split_sizes=split_sizes, foundation=foundation, patience=patience,
                 # Not min_delta: the two backends mean different things by it. Here
                 # it is Lightning's "an improvement must exceed this", applied to
                 # the validation loss, where the band that suits chemprop 1's
