@@ -290,6 +290,9 @@ def subprocess_env(gpu: Optional[str]) -> Dict[str, str]:
     # bar reads them, so a running job looks like it has not started.
     env['PYTHONUNBUFFERED'] = '1'
 
+    # Same device numbering as the dropdown was built from.
+    env.setdefault('CUDA_DEVICE_ORDER', 'PCI_BUS_ID')
+
     if gpu is None or gpu == 'None':
         env['CUDA_VISIBLE_DEVICES'] = ''
     else:

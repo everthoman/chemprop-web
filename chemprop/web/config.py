@@ -24,6 +24,13 @@ DB_FILENAME = 'chemprop.sqlite3'
 CREDENTIALS_FILENAME = 'users_auth.json'  # JSON map of username -> password hash (no database)
 SECRET_KEY_FILENAME = '.flask_secret_key'  # persisted key used to sign session cookies
 PERMANENT_SESSION_LIFETIME = timedelta(days=30)
+# CUDA numbers devices fastest-first unless told otherwise, while nvidia-smi
+# numbers them by PCI bus. On a host whose fastest card is not the first on the
+# bus the two disagree, and the index chosen in the dropdown would then select a
+# different card than its label names. Pin the order so both agree everywhere.
+# Set before any CUDA call: the driver reads it when it initialises.
+os.environ.setdefault('CUDA_DEVICE_ORDER', 'PCI_BUS_ID')
+
 CUDA = torch.cuda.is_available()
 
 # Cards too small to train on are left out of the dropdown. This host has a 2 GB
@@ -51,21 +58,37 @@ def _usable_gpus():
         # Without nvidia-smi, offer every card rather than none.
         return list(range(torch.cuda.device_count())), {}
 
+    # A restricted set renumbers the devices: with CUDA_VISIBLE_DEVICES=1,2 the
+    # training process calls them 0 and 1, whatever nvidia-smi calls them.
+    visible = os.environ.get('CUDA_VISIBLE_DEVICES')
+    allowed = None
+    if visible is not None:
+        allowed = [int(part) for part in visible.split(',') if part.strip().isdigit()]
+
     indices, labels = [], {}
     for line in listing.stdout.strip().splitlines():
         parts = [part.strip() for part in line.split(',')]
         if len(parts) < 3:
             continue
         try:
-            index, memory_gb = int(parts[0]), float(parts[2]) / 1024
+            physical, memory_gb = int(parts[0]), float(parts[2]) / 1024
         except ValueError:
             continue
+
+        if allowed is not None:
+            if physical not in allowed:
+                continue
+            index = allowed.index(physical)
+        else:
+            index = physical
+
         if memory_gb < MIN_GPU_MEMORY_GB:
             continue
+
         indices.append(index)
         labels[index] = f'{index} — {parts[1]} ({memory_gb:.0f} GB)'
 
-    return indices, labels
+    return sorted(indices), labels
 
 
 GPUS, GPU_LABELS = _usable_gpus()
