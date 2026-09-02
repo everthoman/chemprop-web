@@ -1870,7 +1870,12 @@ def train():
                 app.config['CHEMPROP2_BIN'], data_path=data_path, output_dir=temp_dir, task_type=dataset_type,
                 task_names=args.task_names, smiles_column=get_header(data_path)[0],
                 epochs=epochs, ensemble_size=ensemble_size, split_type=split_type,
-                seed=seed, foundation=foundation, patience=patience, min_delta=min_delta,
+                seed=seed, foundation=foundation, patience=patience,
+                # Not min_delta: the two backends mean different things by it. Here
+                # it is Lightning's "an improvement must exceed this", applied to
+                # the validation loss, where the band that suits chemprop 1's
+                # flatness rule cuts a run short by tens of epochs.
+                min_delta=0.0,
                 batch_size=batch_size, config_path=config_path,
                 molecule_featurizer=molecule_featurizer,
                 accelerator=backends.accelerator_for(gpu))
