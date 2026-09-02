@@ -175,17 +175,19 @@
         <br>
 
         <div id="featuresGeneratorSection">
-        {% if split_checkpoints %}
         <h5>Reuse a split <small class="text-muted">(optional)</small></h5>
-        <select name="reuseSplit">
+        <select name="reuseSplit" {% if not split_checkpoints %}disabled{% endif %}>
             <option value="">— split this dataset afresh —</option>
             {% for ck in split_checkpoints %}
             <option value="{{ ck['id'] }}" {% if settings.reuseSplit == ck['id']|string %}selected{% endif %}>from {{ ck['ckpt_name'] }}</option>
             {% endfor %}
         </select>
+        {% if split_checkpoints %}
         <small class="text-muted">&nbsp; trains on exactly the molecules an earlier run trained on, so the two are comparable — the backends partition differently even from the same seed</small>
-        <br>
+        {% else %}
+        <small class="text-muted">&nbsp; no earlier run has a split on record yet; every run from now on records one</small>
         {% endif %}
+        <br>
 
         <h5>Split sizes <small class="text-muted">(train / validation / test, must add up to 1)</small></h5>
         <input type="number" name="splitTrain" min="0" max="1" step="0.05" style="width:80px;"

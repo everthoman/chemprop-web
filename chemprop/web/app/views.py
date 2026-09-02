@@ -358,12 +358,53 @@ def load_split_record(ckpt_id):
                 if row.get('smiles')}
 
 
+def ensure_split_record(ckpt_id) -> bool:
+    """Makes sure a checkpoint's split is on record, rebuilding it if it can be.
+
+    Runs from before splits were recorded still know their partition: the
+    train/test predictions name those two sets, and the conformal calibration file
+    is the validation set. Reconstructing costs one pass and makes older models
+    available for comparison.
+    """
+    if os.path.exists(split_record_path(ckpt_id)):
+        return True
+
+    preds_path = os.path.join(app.config['CHECKPOINT_FOLDER'],
+                              f'{ckpt_id}_train_test_preds.csv')
+    cal_path = conformal_calibration_path(ckpt_id)
+    if not (os.path.exists(preds_path) and os.path.exists(cal_path)):
+        return False
+
+    try:
+        rows = []
+        with open(preds_path) as f:
+            for row in csv.DictReader(f):
+                if row.get('smiles') and row.get('split') in ('train', 'test'):
+                    rows.append((row['smiles'], row['split']))
+        with open(cal_path) as f:
+            for row in csv.DictReader(f):
+                if row.get('smiles'):
+                    rows.append((row['smiles'], 'val'))
+
+        if not rows:
+            return False
+
+        with open(split_record_path(ckpt_id), 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(['smiles', SPLIT_COLUMN])
+            writer.writerows(rows)
+    except OSError:
+        return False
+
+    return True
+
+
 def checkpoints_with_splits(user_id):
     """The user's checkpoints whose split can be reused."""
     rows = db.query_db('SELECT id, ckpt_name FROM ckpt WHERE associated_user = ? '
                        'ORDER BY id DESC',
                        (user_id or app.config['DEFAULT_USER_ID'],))
-    return [row for row in rows if os.path.exists(split_record_path(row['id']))]
+    return [row for row in rows if ensure_split_record(row['id'])]
 
 
 def apply_split_record(data_path, split_map, backend, warnings):
