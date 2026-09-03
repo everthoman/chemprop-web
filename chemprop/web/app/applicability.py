@@ -35,9 +35,9 @@ from rdkit.Chem import AllChem
 _MORGAN_RADIUS = 2
 _MORGAN_BITS = 2048
 
-# Cap the number of training molecules used as references so prediction stays
-# responsive on large datasets. 2000 references give a stable similarity
-# estimate while keeping the pairwise comparison cheap.
+# Deriving the threshold compares every reference with every other, so it is
+# capped; 2000 molecules give a stable estimate of the distribution. Scoring a
+# query is linear and uses the whole training set.
 _MAX_REFERENCES = 2000
 
 # Percentile of the training set's own nearest-neighbour similarity distribution
@@ -84,17 +84,31 @@ class ApplicabilityDomain:
     def from_training_smiles(cls, train_smiles: Sequence[str]) -> Optional["ApplicabilityDomain"]:
         """Build an AD scorer from training-set SMILES.
 
+        A query is compared against every training molecule, so the similarity
+        reported is exact. Only the threshold, which needs each reference's
+        distance to its own nearest neighbour and so costs a pairwise pass, is
+        derived from a bounded sample.
+
+        That sample is drawn from the sorted molecules rather than the order they
+        arrive in: two models trained on the same set write their training files
+        in different orders, and sampling by position gave them different
+        references, so the same molecule could be inside one model's domain and
+        outside another's.
+
         Returns ``None`` when no valid reference molecules could be parsed.
         """
-        smiles = list(train_smiles)
-        if len(smiles) > _MAX_REFERENCES:
-            rng = np.random.default_rng(_RNG_SEED)
-            idx = rng.choice(len(smiles), size=_MAX_REFERENCES, replace=False)
-            smiles = [smiles[i] for i in idx]
-        fps = [fp for fp in (_fingerprint(s) for s in smiles) if fp is not None]
+        fps = [fp for fp in (_fingerprint(s) for s in sorted(set(train_smiles)))
+               if fp is not None]
         if not fps:
             return None
-        return cls(fps, _derive_threshold(fps))
+
+        sample = fps
+        if len(fps) > _MAX_REFERENCES:
+            rng = np.random.default_rng(_RNG_SEED)
+            idx = sorted(rng.choice(len(fps), size=_MAX_REFERENCES, replace=False))
+            sample = [fps[i] for i in idx]
+
+        return cls(fps, _derive_threshold(sample))
 
     def score(self, smiles: str) -> Optional[dict]:
         """Score one query molecule.
