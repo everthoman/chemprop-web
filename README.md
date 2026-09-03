@@ -36,6 +36,16 @@ The v2 backend is offered on the Train page only when that environment is found;
 
 CUDA is optional — the app trains on CPU when no GPU is present. To use one, install a CUDA build of PyTorch (`environment-lock.yml` carries one). Cards are listed by name in the Train page dropdown, read from `nvidia-smi`; `CUDA_DEVICE_ORDER=PCI_BUS_ID` is pinned so the index in the dropdown names the same card that `nvidia-smi` does. Cards with less than 4 GB are left out, since choosing a small display adapter only fails part way into a run — change the threshold with `CHEMPROP_MIN_GPU_MEMORY_GB`. Restricting the app to a subset of cards with `CUDA_VISIBLE_DEVICES` is respected, and the dropdown renumbers to match.
 
+**Cards newer than the pinned PyTorch.** `environment-lock.yml` carries PyTorch 2.5.1 with CUDA 12.4, whose compiled kernels cover up to `sm_90` — Ada and older. A newer architecture (Blackwell, `sm_100`/`sm_120`) is not in that list, and the failure is an unhelpful one: `torch.cuda.is_available()` still returns true, so the card is offered in the dropdown and the run then dies with *"no kernel image is available for execution on the device"*. Check what a given install covers with:
+
+```bash
+python -c "import torch; print(torch.cuda.get_arch_list())"
+```
+
+If your card's architecture is missing, build the environment from the looser `environment.yml` instead of the lock file and install a matching PyTorch over it, e.g. `pip install --force-reinstall torch --index-url https://download.pytorch.org/whl/cu130`. The 1.x code has only been exercised against the pinned 2.5.1, so treat a newer PyTorch as untested: load a checkpoint and run a short training before trusting it. The separate chemprop 2 environment is unaffected — it carries its own, newer PyTorch.
+
+Note also that the 4 GB floor above and small cards in general are a poor fit for the v2 backend, whose batch size (`CHEMPROP2_BATCH_SIZE` in `chemprop/web/config.py`) is a module constant rather than an environment variable, so lowering it to fit means editing that file.
+
 ## Running the web app
 
 ```bash
