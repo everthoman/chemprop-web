@@ -1940,6 +1940,12 @@ def train():
         '--seed', str(seed),
         '--pytorch_seed', str(seed),
     ]
+    # A reused split states the partition itself, so sizes have nothing left to
+    # decide; chemprop 1 refuses them outright alongside the separate validation
+    # and test files it reads instead.
+    if split_sizes and split_map:
+        warnings.append('Split sizes were ignored: the reused split sets the partition.')
+        split_sizes = None
     if split_sizes:
         train_arg_list += ['--split_sizes', *[str(part) for part in split_sizes]]
     # chemprop 1.x reads its config as JSON; a chemprop 2 config is handed to the
@@ -2379,21 +2385,6 @@ def hyperopt_page():
     if dataset_type == 'classification' and len(unique_targets - {0, 1}) > 0:
         errors.append('Selected classification dataset but not all labels are 0 or 1. Select regression instead.')
         return render_hyperopt(warnings=warnings, errors=errors)
-
-    splits_column = None
-    split_paths = None
-    if split_map:
-        try:
-            data_path, splits_column, split_paths = apply_split_record(
-                data_path, split_map, backend, warnings)
-        except ValueError as e:
-            errors.append(str(e))
-            return render_train(warnings=warnings, errors=errors)
-
-        if backend == 'v1':
-            train_arg_list[train_arg_list.index('--data_path') + 1] = data_path
-            train_arg_list += ['--separate_val_path', split_paths['val'],
-                               '--separate_test_path', split_paths['test']]
 
     if dataset_type == 'regression' and unique_targets <= {0, 1}:
         errors.append('Selected regression dataset but all labels are 0 or 1. Select classification instead.')
