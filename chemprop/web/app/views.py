@@ -105,6 +105,26 @@ def current_job():
     return JOBS.get(job_key())
 
 
+def _last_error_line(log_path: str) -> Optional[str]:
+    """The exception that ended a run, read back from its log.
+
+    A chemprop 2 search writes its traceback to its own log rather than the
+    server's, so telling the reader to check the logs is only useful alongside
+    which log, and what it says.
+    """
+    try:
+        with open(log_path) as f:
+            lines = [line.strip() for line in f if line.strip()]
+    except OSError:
+        return None
+
+    for line in reversed(lines):
+        if re.match(r'^[A-Za-z_][\w.]*(Error|Exception)\b.*: ', line):
+            return line
+
+    return None
+
+
 def end_job(job: "Job") -> None:
     """Removes a job once its results have been prepared."""
     with JOBS_LOCK:
@@ -2414,9 +2434,11 @@ def hyperopt_page():
                 hyper_args_list += ['--gpu', gpu]
 
         hyper_args = HyperoptArgs().parse_args(hyper_args_list)
-        hyper_args.task_names = get_task_names(path=data_path, smiles_columns=hyper_args.smiles_columns)
+        hyper_args.task_names = get_task_names(path=data_path, smiles_columns=hyper_args.smiles_columns,
+                                               ignore_columns=ignore_cols or None)
 
         job = start_job('hyperopt')
+        hyperopt_log = None
 
         if backend == 'v2':
             # chemprop 2 writes its chosen settings as a config file for its own
@@ -2425,7 +2447,7 @@ def hyperopt_page():
             # Outside the run's TemporaryDirectory: when a search fails, its output
             # is the only account of why, and it must outlive the request.
             log_path = os.path.join(app.config['TEMP_FOLDER'], 'hyperopt.log')
-            job.log_path = log_path
+            job.log_path = hyperopt_log = log_path
 
             hpopt_cmd = backends.build_hpopt_cmd(
                 app.config['CHEMPROP2_BIN'], data_path=data_path,
@@ -2464,7 +2486,9 @@ def hyperopt_page():
             end_job(job)
             if cancelled:
                 return render_hyperopt(warnings=['Hyperopt was cancelled.'])
-            errors.append('Hyperopt failed — check server logs for details.')
+            detail = _last_error_line(hyperopt_log) if hyperopt_log else None
+            errors.append(f'Hyperopt failed: {detail} (full output in {hyperopt_log})' if detail
+                          else 'Hyperopt failed — check server logs for details.')
             return render_hyperopt(warnings=warnings, errors=errors)
 
         job.progress.value = 100
