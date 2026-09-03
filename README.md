@@ -11,12 +11,30 @@ Upstream Chemprop v2 dropped the web app (`chemprop/web/`). This fork preserves 
 ## Installation
 
 ```bash
-git clone https://github.com/everthoman/chemprop-web.git
-cd chemprop-web
+git clone git@github.com:everthoman/chemprop-webapp.git
+cd chemprop-webapp
+conda env create -f environment-lock.yml
+conda activate chemprop
 pip install -e .
 ```
 
-Requires Python 3.7–3.11.
+`environment-lock.yml` pins the environment the app is actually deployed with, exported from the machine that serves it. `environment.yml` is the looser, cross-platform alternative: it solves to a newer stack, which generally works but is not the one that has been tested. Neither file installs chemprop itself — that is this repository, installed editable by the final command.
+
+Requires Python 3.9–3.11.
+
+### chemprop 2.x backend (optional)
+
+Foundation models such as CheMeleon are chemprop 2.x artifacts and cannot be loaded by the 1.x code the app runs on. They are used by shelling out to a chemprop 2 CLI installed in a **separate** environment, so the app process never imports chemprop 2.x:
+
+```bash
+conda env create -f environment-chemprop2.yml
+```
+
+The v2 backend is offered on the Train page only when that environment is found; without it, the option is simply hidden and the 1.x backend is unaffected. The app looks for `<conda root>/envs/chemprop2/bin/chemprop`, overridable with `CHEMPROP2_ENV` (a different environment name) or `CHEMPROP2_BIN` (the full path to the binary). Set `CHEMPROP2_BIN` explicitly when running under a service manager: `conda` is usually absent from the environment there, and the app then falls back to guessing `~/Programs/miniconda3/bin/conda`.
+
+### GPUs
+
+CUDA is optional — the app trains on CPU when no GPU is present. To use one, install a CUDA build of PyTorch (`environment-lock.yml` carries one). Cards are listed by name in the Train page dropdown, read from `nvidia-smi`; `CUDA_DEVICE_ORDER=PCI_BUS_ID` is pinned so the index in the dropdown names the same card that `nvidia-smi` does. Cards with less than 4 GB are left out, since choosing a small display adapter only fails part way into a run — change the threshold with `CHEMPROP_MIN_GPU_MEMORY_GB`. Restricting the app to a subset of cards with `CUDA_VISIBLE_DEVICES` is respected, and the dropdown renumbers to match.
 
 ## Running the web app
 
@@ -24,13 +42,58 @@ Requires Python 3.7–3.11.
 chemprop_web
 ```
 
-Then open `http://localhost:5001` in your browser. Use `--host` and `--port` to change the address.
+Then open `http://localhost:5000` in your browser. Use `--host` and `--port`, or the `CHEMPROP_HOST` and `CHEMPROP_PORT` environment variables, to change the address.
 
 The web app is password-protected (see [User accounts](#user-accounts) below). Before the first launch, create an account:
 
 ```bash
 chemprop_web --set_password alice   # prompts for a password, then exits
 ```
+
+This also creates the database and the data, checkpoint, and temp folders, so it is the only bootstrap step needed on a fresh install. By default these live under `chemprop/web`; `--root_folder` puts them elsewhere.
+
+Set `CHEMPROP_ADMIN_USERS` on any host that is not the original deployment — the admin list defaults to the single user `evehom`, and without it nobody can create further accounts from the web interface.
+
+### Deploying as a service
+
+An example systemd unit, running the app from a clone in `/opt/webapps/chemprop`:
+
+```ini
+[Unit]
+Description=Chemprop Web Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=<user>
+WorkingDirectory=/opt/webapps/chemprop
+Environment=CHEMPROP_HOST=<host IP>
+Environment=CHEMPROP_PORT=5003
+Environment=CHEMPROP_ADMIN_USERS=<admin username>
+ExecStart=/path/to/miniconda3/envs/chemprop/bin/python /opt/webapps/chemprop/web.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Install it with `systemctl daemon-reload && systemctl enable --now chemprop`.
+
+### Moving an existing installation
+
+Datasets, checkpoints, accounts, and run history are deliberately not in version control, so a clone starts empty. To carry an existing installation to another machine, copy these across after installing:
+
+| Path (relative to the root folder) | Contents |
+| --- | --- |
+| `chemprop.sqlite3` | datasets, checkpoints, and run records |
+| `app/web_data` | uploaded dataset files |
+| `app/web_checkpoints` | trained model files and their stored results |
+| `users_auth.json` | usernames and password hashes |
+| `.flask_secret_key` | session-signing key |
+
+Copy the database and `app/web_checkpoints` together — the records in one refer to the files in the other. Bringing `.flask_secret_key` keeps existing logins valid; leaving it behind only forces everyone to sign in again. `app/temp` holds working files for running jobs and is cleared at every start, so it need not be copied.
 
 ---
 
