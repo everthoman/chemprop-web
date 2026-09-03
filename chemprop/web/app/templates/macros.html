@@ -20,6 +20,11 @@
     {% endif %}
 {% endmacro %}
 
+{# The upload macros below post to the server, so they carry the session's
+   CSRF token. A macro sees only its arguments unless the importing template
+   says `with context`, and without it the hidden field renders empty and
+   every upload is rejected as an expired page. Import these two with context. #}
+
 <!--TODO: Better explanation of data format (maybe on another page)-->
 {% macro add_data(return_page, data_upload_warnings, data_upload_errors) %}
     <h4>Add New Dataset <span class="glyphicon glyphicon-question-sign" style="font-size:15px" data-toggle="tooltip" data-placement="right" title="The data file must have a header row. Each row should contain the SMILES and each of the property values for a molecule. Comma-separated (.csv), tab-separated (.tsv/.txt), or space-separated files are all accepted."></span></h4>
