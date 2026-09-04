@@ -99,7 +99,10 @@ def get_task_names(
 
     ignore_columns = set(smiles_columns + ([] if ignore_columns is None else ignore_columns))
 
-    target_names = [column for column in columns if column not in ignore_columns]
+    # Spreadsheet exports often carry trailing commas, which arrive here as
+    # unnamed columns. They are not targets, so drop them.
+    target_names = [column for column in columns
+                    if column not in ignore_columns and column.strip() != '']
 
     if loss_function == "quantile_interval":
         target_names = target_names * 2
@@ -143,7 +146,10 @@ def get_mixed_task_names(path: str,
     if target_columns is not None:
         target_names =  target_columns
     else:
-        target_names = [column for column in columns if column not in ignore_columns]
+        # Spreadsheet exports often carry trailing commas, which arrive here as
+        # unnamed columns. They are not targets, so drop them.
+        target_names = [column for column in columns
+                        if column not in ignore_columns and column.strip() != '']
 
     with open(path) as f:
         reader = csv.DictReader(f)
