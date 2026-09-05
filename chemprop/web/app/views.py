@@ -2011,7 +2011,11 @@ def train():
 
     if dataset_type == 'classification' and len(unique_targets - {0, 1}) > 0:
         if binarize_enabled:
-            binarize_out = os.path.join(app.config['TEMP_FOLDER'], f'binarized_{secure_filename(data_name)}.csv')
+            # data_name is the dataset's registry id, not user-supplied text, so
+            # there is nothing here to sanitise; the copy is per-user so that two
+            # people binarizing the same dataset do not overwrite each other's
+            # file while their runs are reading it.
+            binarize_out = user_temp_path(f'binarized_{data_name}.csv')
             try:
                 binarize_stats = _binarize_csv(data_path, args.task_names, binarize_method, binarize_param, binarize_out)
             except Exception as e:
