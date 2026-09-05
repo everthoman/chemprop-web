@@ -83,8 +83,34 @@
                     $('#binarizeParamHelp').text(labels[m][1]);
                 }
                 updateBinarizeLabels();
+
+                $('#scrambleCheckbox').change(function() {
+                    var on = $(this).is(':checked');
+                    $('#scrambleEnabled').val(on ? 'True' : 'False');
+                    $('#scrambleNote').toggle(on);
+                });
             });
         </script>
+
+        {% set scr_on = settings.scrambleEnabled == 'True' %}
+        <div style="margin-top:6px;">
+            <div class="checkbox" style="margin-top:0; margin-bottom:0;">
+                <label>
+                    <input type="checkbox" id="scrambleCheckbox" {% if scr_on %}checked{% endif %}>
+                    Y-scramble <small class="text-muted">— control run: shuffle the targets so they no longer match their structures</small>
+                </label>
+            </div>
+            <input type="hidden" name="scrambleEnabled" id="scrambleEnabled" value="{{ 'True' if scr_on else 'False' }}">
+            <div id="scrambleNote" style="display:{% if scr_on %}block{% else %}none{% endif %}; margin-left:20px; margin-top:4px;">
+                <small class="text-danger">
+                    This deliberately destroys the structure-activity relationship, so the run
+                    <strong>should</strong> score near chance. Train it the same way as the real run
+                    and compare: if the scrambled model scores well, the real one's score is
+                    measuring something other than chemistry. The checkpoint is named
+                    <em>[y-scrambled]</em> so it cannot be mistaken for a usable model.
+                </small>
+            </div>
+        </div>
         <br>
 
         <h5>Model</h5>

@@ -288,6 +288,53 @@ def _binarize_csv(data_path: str, task_names: List[str], method: str,
     return stats
 
 
+def _scramble_csv(data_path: str, task_names: List[str], out_path: str, seed: int) -> dict:
+    """Write a copy of data_path with the target columns randomly permuted.
+
+    Y-scrambling is a control experiment: the structures and the block of target
+    values both survive intact, and only the pairing between them is destroyed.
+    Nothing generalisable is left to learn, so a run on the copy should score at
+    chance. One that does not is reporting something other than structure-activity
+    signal - an identifier leaking into the features, a metric that flatters a
+    degenerate model, or a split that puts near-duplicates on both sides.
+
+    The permutation is drawn from the run's own seed, so a scrambled run repeats
+    exactly like a real one. Every target column moves under the same permutation,
+    which keeps a multi-task set's columns as correlated with each other as they
+    were, and preserves each column's count of missing values.
+
+    :return: ``{'n_rows', 'n_moved', 'seed'}``, where ``n_moved`` counts the rows
+             whose targets actually changed - the check that the shuffle did
+             something, which it cannot when every target is identical.
+    """
+    with open(data_path, newline='') as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
+        fieldnames = list(reader.fieldnames)
+
+    cols = [col for col in task_names if col in fieldnames]
+    if not cols:
+        raise ValueError('none of the target columns were found in the data')
+
+    blocks = [tuple(row.get(col) for col in cols) for row in rows]
+    order = np.random.default_rng(seed).permutation(len(rows))
+
+    n_moved = 0
+    for row, source in zip(rows, order):
+        block = blocks[source]
+        if block != tuple(row.get(col) for col in cols):
+            n_moved += 1
+        for col, value in zip(cols, block):
+            row[col] = value
+
+    with open(out_path, 'w', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    return {'n_rows': len(rows), 'n_moved': n_moved, 'seed': seed}
+
+
 def _parse_val_curves(log_path):
     """Parse verbose.log and return per-model validation scores by epoch."""
     models = []
@@ -1805,7 +1852,7 @@ def train():
             'dataName', 'idColumn', 'datasetType', 'splitType', 'featuresGenerator',
             'epochs', 'ensembleSize', 'patience', 'minDelta', 'seed',
             'conformalEnabled', 'conformalAlpha', 'checkpointName', 'gpu',
-            'binarizeEnabled', 'binarizeMethod', 'binarizeParam',
+            'binarizeEnabled', 'binarizeMethod', 'binarizeParam', 'scrambleEnabled',
             'backend', 'foundation', 'foundationEnabled', 'batchSize',
             'splitTrain', 'splitVal', 'splitTest', 'stopOn', 'reuseSplit')
     }
@@ -1931,6 +1978,11 @@ def train():
     except ValueError:
         binarize_param = _default_param[binarize_method]
 
+    # Y-scrambling: a control run that is meant to fail. It belongs with the other
+    # data preparation steps because that is all it is - a copy of the CSV with the
+    # targets shuffled out of register with the structures.
+    scramble_enabled = request.form.get('scrambleEnabled', 'False') == 'True'
+
     # chemprop 2 spells these differently; unknown values are dropped rather than
     # passed to a subprocess.
     molecule_featurizer = None
@@ -2050,6 +2102,40 @@ def train():
                 'Selected classification dataset but not all labels are 0 or 1. '
                 'Enable auto-binarize above, or select regression instead.')
             return render_train(warnings=warnings, errors=errors)
+
+    if scramble_enabled:
+        scramble_out = user_temp_path(f'scrambled_{data_name}.csv')
+        try:
+            scramble_stats = _scramble_csv(data_path, args.task_names, scramble_out, seed)
+        except Exception as e:
+            errors.append(f'Y-scrambling failed: {e}')
+            return render_train(warnings=warnings, errors=errors)
+
+        if scramble_stats['n_moved'] == 0:
+            errors.append(
+                'Y-scrambling changed nothing: every row carries the same target value, '
+                'so shuffling them is a no-op and the run would not be a control.')
+            return render_train(warnings=warnings, errors=errors)
+
+        # Scrambling last means the labels shuffled are the ones actually trained
+        # on, auto-binarize included, and that the split below is drawn over the
+        # scrambled file. Permuting commutes with a per-value threshold anyway, so
+        # binarize reports thresholds and class counts from the real data.
+        data_path = scramble_out
+        train_arg_list[train_arg_list.index('--data_path') + 1] = scramble_out
+
+        # A control run is worthless if it cannot be told from a real one later.
+        # The name is what identifies a checkpoint everywhere it is offered - the
+        # Checkpoints page, the Predict dropdown - so the marker goes there.
+        checkpoint_name = f'{checkpoint_name} [y-scrambled]'
+
+        moved_pct = round(100 * scramble_stats['n_moved'] / scramble_stats['n_rows'], 1)
+        warnings.append(
+            f'Y-SCRAMBLED CONTROL RUN — not a usable model. Targets were shuffled '
+            f'across {scramble_stats["n_rows"]} rows with seed {scramble_stats["seed"]} '
+            f'({moved_pct}% of rows changed value), so any structure-activity signal '
+            f'is gone. Expect this run to score near chance; if it scores well, the '
+            f'result of the matching real run is not to be trusted.')
 
     splits_column = None
     split_paths = None
