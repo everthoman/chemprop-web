@@ -1893,6 +1893,8 @@ def train():
         return render_train(warnings=warnings, errors=errors)
 
     # Which quantity early stopping and checkpoint selection follow (v2 only).
+    # The v1 backend judges flatness on its own args.metric, so the Train page
+    # offers this only for v2 and the field is absent otherwise.
     stop_on = request.form.get('stopOn', 'metric')
 
     # Reusing an earlier run's partition is what makes two runs comparable: the
@@ -2121,7 +2123,7 @@ def train():
                 min_delta=0.0,
                 batch_size=batch_size, config_path=config_path,
                 molecule_featurizer=molecule_featurizer,
-                tracking_metric=backends.tracking_metric_for(dataset_type),
+                tracking_metric=backends.tracking_metric_for(dataset_type, stop_on),
                 accelerator=backends.accelerator_for(gpu))
             train_proc = backends.run_cli(train_cmd, job.log_path,
                                           backends.subprocess_env(gpu))

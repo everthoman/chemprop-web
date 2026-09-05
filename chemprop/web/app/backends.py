@@ -322,13 +322,25 @@ def subprocess_env(gpu: Optional[str]) -> Dict[str, str]:
 # the training loss by default, but for classification that is cross-entropy,
 # which flattens while ranking is still improving - so a run stops with its AUC
 # still climbing, and the checkpoint kept is the best-loss epoch rather than the
-# best-AUC one. Regression's loss is the error being reported, so it needs no
-# override.
-TRACKING_METRICS = {'classification': 'roc'}
+# best-AUC one. Naming the plotted metric keeps the two in step. Regression's
+# loss is the error being reported, so there the two agree either way.
+#
+# These are the aliases chemprop 2 validates against: the default metric of each
+# task type, plus 'val_loss'. Anything else is rejected unless it is also passed
+# to --metrics, which this app does not do.
+TRACKING_METRICS = {'classification': 'roc', 'regression': 'mse'}
 
 
-def tracking_metric_for(task_type: str) -> Optional[str]:
-    """The validation metric a run should be judged on, or None for the default."""
+def tracking_metric_for(task_type: str, stop_on: str = 'metric') -> Optional[str]:
+    """The validation quantity a run should be judged on, or None for the default.
+
+    ``stop_on`` is the Train page's "Judge on" choice: ``'metric'`` follows the
+    metric the convergence chart plots, ``'loss'`` the validation loss, which is
+    smoother but can flatten while ranking is still improving. Any other value
+    is read as ``'metric'``, so a malformed form field cannot reach the CLI.
+    """
+    if stop_on == 'loss':
+        return 'val_loss'
     return TRACKING_METRICS.get(task_type)
 
 

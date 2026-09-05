@@ -250,9 +250,12 @@
                 $("#esCheckbox").change(function() {
                     var on = $(this).is(":checked");
                     $("#esOptions").toggle(on);
-                    // Disabled inputs aren't submitted, so unchecking cleanly disables
-                    // early stopping (the server sees no patience value).
-                    $("#esOptions input").prop("disabled", !on);
+                    // Disabled fields aren't submitted, so unchecking cleanly disables
+                    // early stopping (the server sees no patience value). The
+                    // "Judge on" select goes with them: it is only visible while
+                    // early stopping is on, and a hidden value left over from an
+                    // earlier run would otherwise still steer checkpoint selection.
+                    $("#esOptions input, #esOptions select").prop("disabled", !on);
                 });
             });
         </script>
