@@ -42,6 +42,10 @@ Chemprop v2 is a major rewrite that no longer includes the browser-based web app
 
 - **`chemprop/web/app/templates/train.html`** — Fixed progress bar CSS `width` property which had a quoted string value (`"{{ progress }} %"`) preventing it from updating visually.
 
+- **`chemprop/web/app/views.py`** — Fixed a 500 on the Train page whenever auto-binarize was enabled. The dataset lookup was changed to resolve through the registry, so the name in hand became the row's integer id, and `secure_filename` rejects one (`TypeError: normalize() argument 2 must be str, not int`). The binarized copy is now written through `user_temp_path`, which also stops two people binarizing the same dataset from overwriting each other's file while their runs are reading it.
+
+- **`chemprop/web/app/views.py`** and **`backends.py`** — The Train page's "Judge on" choice, offered for chemprop 2 runs, was read from the form and then never used: early stopping and checkpoint selection always followed the task type's default metric, so a classification run was judged on AUC whatever the dropdown said. The choice now reaches `--tracking-metric`.
+
 ### Web app improvements
 
 - **`chemprop/web/app/templates/train.html`** and **`predict.html`** — GPU 0 is now selected by default in the GPU dropdown when a CUDA device is available, instead of defaulting to CPU (None).
@@ -51,3 +55,5 @@ Chemprop v2 is a major rewrite that no longer includes the browser-based web app
 - **`chemprop/web/app/templates/checkpoints.html`** and **`data.html`** — Delete buttons now show a confirmation dialog naming the item before permanently deleting it.
 
 - **`chemprop/web/app/templates/predict.html`** — Truncated predictions notice replaced with a visible Bootstrap alert showing the total prediction count and a direct link to download the full CSV.
+
+- **`chemprop/web/app/views.py`** and **`templates/train.html`** — Added a Y-scramble option to the Train page: a control run that permutes the target columns before the split, leaving the structures and the block of target values intact and destroying only the pairing between them. A run on the copy has no structure-activity signal to learn and should score at chance; one that scores well is measuring something else. Available for regression and classification on both backends, and the checkpoint is named `[y-scrambled]` so a control cannot be mistaken for a usable model. On the 4200-row lipophilicity set, identical settings give test R² +0.68 for the real run and −0.00 for the scrambled one.
