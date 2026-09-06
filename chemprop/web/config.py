@@ -11,7 +11,7 @@ from datetime import timedelta
 import torch
 
 
-WEB_VERSION = '1.8.8'
+WEB_VERSION = '1.8.9'
 
 DEFAULT_USER_ID = 1
 
